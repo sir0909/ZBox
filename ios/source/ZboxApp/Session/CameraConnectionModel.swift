@@ -601,7 +601,10 @@ final class CameraConnectionModel: ObservableObject {
                 prefix.append(chunk)
             }
             var jpeg = EmbeddedJPEG.largestComplete(in: prefix)
-            if jpeg == nil, let range = TIFFPreviewRange.largest(in: prefix, fileSize: size) {
+            let ranges = [TIFFPreviewRange.largest(in: prefix, fileSize: size),
+                          NikonPreviewRange.largest(in: prefix, fileSize: size)].compactMap { $0 }
+            let largest = ranges.max { ($0.upperBound - $0.lowerBound) < ($1.upperBound - $1.lowerBound) }
+            if let range = largest, range.upperBound - range.lowerBound > UInt64(jpeg?.count ?? 0) {
                 var candidate = Data()
                 let expected = Int(range.upperBound - range.lowerBound)
                 while candidate.count < expected {
