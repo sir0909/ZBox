@@ -4,6 +4,7 @@ import UIKit
 /// M2 monitor: no operation is started automatically on navigation or foregrounding.
 struct MonitorHomeView: View {
     @StateObject private var model = CameraConnectionModel()
+    @StateObject private var recipes = RecipeWorkbench()
     @Environment(\.scenePhase) private var scenePhase
     @State private var confirmCapture = false
     @State private var fullScreen = false
@@ -114,13 +115,15 @@ struct MonitorHomeView: View {
             Label("监看", systemImage: "viewfinder").font(.caption2.bold())
                 .padding(.vertical, 10).frame(maxWidth: .infinity)
                 .background(yellow, in: Capsule()).foregroundStyle(.black)
-            Label("AI 调色", systemImage: "sparkles").font(.caption2).frame(maxWidth: .infinity)
-                .foregroundStyle(.secondary).accessibilityLabel("AI 调色，尚未实现")
+            NavigationLink { RecipeLabScreen(workbench: recipes) } label: {
+                Label("配方", systemImage: "slider.horizontal.3").font(.caption2).frame(maxWidth: .infinity)
+            }.accessibilityLabel("本地配方工作台，AI 尚未接入")
             NavigationLink { STAAlbumScreen(model: model) } label: {
                 Label("相册", systemImage: "photo.on.rectangle").font(.caption2).frame(maxWidth: .infinity)
             }.disabled(!connected || !model.connectedSTA)
-            Label("预设库", systemImage: "square.stack").font(.caption2).frame(maxWidth: .infinity)
-                .foregroundStyle(.secondary).accessibilityLabel("预设库，尚未实现")
+            NavigationLink { LocalPresetLibraryScreen(workbench: recipes) } label: {
+                Label("预设库", systemImage: "square.stack").font(.caption2).frame(maxWidth: .infinity)
+            }
         }.padding(.horizontal, 10).padding(.vertical, 6)
             .background(.bar)
     }
