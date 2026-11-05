@@ -29,6 +29,36 @@ enum ClientIdentityStore {
         data.map { String(format: "%02X", $0) }.joined()
     }
 
+    /// 解析 32 位十六进制 GUID(大小写不敏感,允许空格与连字符)。
+    static func parseHex(_ text: String) -> Data? {
+        let cleaned = text.filter { $0.isHexDigit }
+        guard cleaned.count == 32 else { return nil }
+        var bytes = Data()
+        var index = cleaned.startIndex
+        while index < cleaned.endIndex {
+            let next = cleaned.index(index, offsetBy: 2)
+            guard let byte = UInt8(cleaned[index..<next], radix: 16) else { return nil }
+            bytes.append(byte)
+            index = next
+        }
+        return bytes
+    }
+
+    /// 手动保存 GUID(用于与相机已登记的主机身份对齐)。
+    static func saveGuid(_ guid: Data) throws {
+        precondition(guid.count == 16, "GUID must be 16 bytes")
+        _ = SecItemDelete(baseQuery() as CFDictionary)
+        try writeGuid(guid)
+    }
+
+    /// 删除本机 GUID;下次连接会生成新的身份(相机可能需要重新配对)。
+    static func resetGuid() throws {
+        let status = SecItemDelete(baseQuery() as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw StoreError.keychain(status)
+        }
+    }
+
     private static func baseQuery() -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
