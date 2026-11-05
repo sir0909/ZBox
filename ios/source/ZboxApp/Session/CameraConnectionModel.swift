@@ -120,14 +120,7 @@ final class CameraConnectionModel: ObservableObject {
         cancelAlbumVerification()
         cancelPendingCapture()
         cancelPendingExposureWrite()
-        // Mark the current task synchronously. A deferred stop must not accidentally
-        // target a new live-view task started after the app becomes active again.
-        if let task = liveViewTask {
-            liveViewStopRequested = true
-            liveViewPhase = .stopping
-            liveViewMessage = "正在停止取景…"
-            Task { await task.value }
-        }
+        requestStopLiveView()
     }
 
     func appBecameActive() { appActive = true }
@@ -380,6 +373,16 @@ final class CameraConnectionModel: ObservableObject {
             guard let self else { return }
             await self.runLiveView(active)
         }
+    }
+
+    /// Capture and mark only the current task synchronously; navigation callbacks
+    /// must never queue a stop that can later affect a newly started live view.
+    func requestStopLiveView() {
+        guard let task = liveViewTask else { return }
+        liveViewStopRequested = true
+        liveViewPhase = .stopping
+        liveViewMessage = "正在停止取景…"
+        Task { await task.value }
     }
 
     func stopLiveView() async {

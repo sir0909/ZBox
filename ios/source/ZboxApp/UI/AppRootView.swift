@@ -2,9 +2,8 @@ import SwiftUI
 import ZboxCore
 
 struct AppRootView: View {
-    @StateObject private var model = CameraConnectionModel()
+    @ObservedObject var model: CameraConnectionModel
     @State private var guidDraft = ""
-    @Environment(\.scenePhase) private var scenePhase
 
     private func slotDescription(_ slot: PictureControlSlot) -> String {
         switch slot.state {
@@ -16,8 +15,7 @@ struct AppRootView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            List {
+        List {
                 Section("工程状态") {
                     LabeledContent("阶段", value: "M2 实时取景开发中")
                     LabeledContent("协议核心", value: "ZboxCore")
@@ -178,15 +176,7 @@ struct AppRootView: View {
                         LogConsoleView(log: model.log)
                     }
                 }
-            }
-            .navigationTitle("Zbox")
         }
-        .task {
-            model.loadIdentity()
-            if scenePhase == .active { model.appBecameActive() } else { model.appBecameInactive() }
-        }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active { model.appBecameActive() } else { model.appBecameInactive() }
-        }
+        .navigationTitle("连接与设置")
     }
 }

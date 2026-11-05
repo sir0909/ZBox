@@ -9,6 +9,7 @@ struct LiveViewScreen: View {
     @State private var landscapeRequested = false
     @State private var orientationMessage = ""
     @State private var hostingWindow: UIWindow?
+    @State private var attemptedAutoRotation = false
 
     private func toggleLandscape() {
         guard let window = hostingWindow else {
@@ -119,6 +120,18 @@ struct LiveViewScreen: View {
         .statusBarHidden(landscapeRequested)
         .navigationBarBackButtonHidden(true)
         .toolbar(.hidden, for: .navigationBar)
+        .onAppear {
+            if hostingWindow != nil && !attemptedAutoRotation {
+                attemptedAutoRotation = true
+                toggleLandscape()
+            }
+        }
+        .onChange(of: hostingWindow) { _, window in
+            if window != nil && !attemptedAutoRotation {
+                attemptedAutoRotation = true
+                toggleLandscape()
+            }
+        }
         .confirmationDialog("拍摄一张照片到相机存储卡？", isPresented: $confirmCapture, titleVisibility: .visible) {
             Button("确认拍摄") { Task { await model.captureOneToCard() } }
             Button("取消", role: .cancel) {}
@@ -128,9 +141,10 @@ struct LiveViewScreen: View {
         .onDisappear {
             if let window = hostingWindow { OrientationPolicy.shared.release(in: window, requestPortrait: landscapeRequested) }
             landscapeRequested = false
+            attemptedAutoRotation = false
             orientationMessage = ""
             model.cancelPendingCapture()
-            Task { await model.stopLiveView() }
+            model.requestStopLiveView()
         }
     }
 }
