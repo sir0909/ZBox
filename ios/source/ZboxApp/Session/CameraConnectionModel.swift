@@ -16,6 +16,7 @@ final class CameraConnectionModel: ObservableObject {
     }
 
     @Published private(set) var phase: Phase = .idle
+    @Published private(set) var appActive = true
     @Published private(set) var candidates: [HotspotCameraEndpoint] = []
     @Published private(set) var bonjourCandidates: [BonjourCameraCandidate] = []
     @Published var cameraJoinsNetwork = false
@@ -99,7 +100,7 @@ final class CameraConnectionModel: ObservableObject {
         case .streaming: view = .streaming
         case .starting, .stopping: view = .transitioning
         }
-        return CameraOperationPolicy(connected: phase == .connected && session != nil,
+        return CameraOperationPolicy(connected: appActive && phase == .connected && session != nil,
                                      pairingPrepared: pairingPrepared, busy: busy, liveView: view)
     }
     @Published var manualHost = ""
@@ -114,12 +115,22 @@ final class CameraConnectionModel: ObservableObject {
 
     /// Centralized lifecycle entry point; avoid cancelling an on-wire PTP transaction.
     func appBecameInactive() {
+        appActive = false
         cancelAlbumWork()
         cancelAlbumVerification()
         cancelPendingCapture()
         cancelPendingExposureWrite()
-        Task { await stopLiveView() }
+        // Mark the current task synchronously. A deferred stop must not accidentally
+        // target a new live-view task started after the app becomes active again.
+        if let task = liveViewTask {
+            liveViewStopRequested = true
+            liveViewPhase = .stopping
+            liveViewMessage = "正在停止取景…"
+            Task { await task.value }
+        }
     }
+
+    func appBecameActive() { appActive = true }
 
     #if DEBUG
     /// App-hosted tests inject a fully connected fake transport; excluded from Release.
@@ -172,7 +183,7 @@ final class CameraConnectionModel: ObservableObject {
     // MARK: - Discovery and connection
 
     func scan() async {
-        guard phase == .idle else { return }
+        guard appActive, phase == .idle else { return }
         phase = .scanning
         candidates = []
         log.add("开始热点相机扫描（bridge/en 私有子网，TCP 15740）")
@@ -196,7 +207,7 @@ final class CameraConnectionModel: ObservableObject {
     }
 
     func scanBonjour() async {
-        guard phase == .idle else { return }
+        guard appActive, phase == .idle else { return }
         phase = .scanning
         bonjourCandidates = []
         log.add("开始 Bonjour 服务发现")
@@ -214,18 +225,18 @@ final class CameraConnectionModel: ObservableObject {
     }
 
     func connectBonjour(_ candidate: BonjourCameraCandidate) async {
-        guard phase == .idle else { return }
+        guard appActive, phase == .idle else { return }
         await openSession(endpoint: candidate.endpoint, localAddress: nil,
                           staMode: cameraJoinsNetwork, displayName: "Bonjour 服务")
     }
 
     func connect(_ endpoint: HotspotCameraEndpoint) async {
-        guard phase == .idle else { return }
+        guard appActive, phase == .idle else { return }
         await openSession(host: endpoint.cameraAddress, localAddress: endpoint.phoneAddress)
     }
 
     func connectManual() async {
-        guard phase == .idle else { return }
+        guard appActive, phase == .idle else { return }
         let host = manualHost.trimmingCharacters(in: .whitespaces)
         guard HotspotAddressPlanner.parseIPv4(host) != nil else {
             statusMessage = "请输入有效的 IPv4 地址，例如 172.20.10.2"

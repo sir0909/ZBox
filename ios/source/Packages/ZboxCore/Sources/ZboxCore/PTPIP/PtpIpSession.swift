@@ -328,6 +328,8 @@ public actor PtpIpSession {
             guard connectionInfo != nil, sessionGeneration == generation else { throw PtpIpSessionError.notConnected }
         }
         try ensureCurrent()
+        guard await shouldContinue() else { throw ExposureWriteError.cancelledBeforeWrite }
+        try ensureCurrent()
         let code = UInt32(property.rawValue)
         let desc = try await runOperation(opCode: PtpOpCode.getDevicePropDesc, params: [code], expectData: true,
                                           timeout: 6, maxDataBytes: 4096)
@@ -335,6 +337,8 @@ public actor PtpIpSession {
         guard desc.response.isOK else { throw PtpIpSessionError.operationFailed(code: desc.response.code, opCode: PtpOpCode.getDevicePropDesc) }
         let parsed = try ExposureDescriptor.parse(desc.data, property: property)
         guard parsed.type == expectedType, parsed.writable, parsed.choices.contains(desired) else { throw ExposureWriteError.notWritableOrValueNotAllowed }
+        guard await shouldContinue() else { throw ExposureWriteError.cancelledBeforeWrite }
+        try ensureCurrent()
         let before = try await runOperation(opCode: PtpOpCode.getDevicePropValue, params: [code], expectData: true,
                                             timeout: 6, maxDataBytes: expectedType == 0xffff ? 257 : 4)
         try ensureCurrent()

@@ -181,11 +181,12 @@ struct AppRootView: View {
             }
             .navigationTitle("Zbox")
         }
-        .task { model.loadIdentity() }
+        .task {
+            model.loadIdentity()
+            if scenePhase == .active { model.appBecameActive() } else { model.appBecameInactive() }
+        }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active {
-                model.appBecameInactive()
-            }
+            if phase == .active { model.appBecameActive() } else { model.appBecameInactive() }
         }
     }
 }
