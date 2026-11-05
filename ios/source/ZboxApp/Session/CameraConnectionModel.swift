@@ -6,7 +6,7 @@ import ZboxCore
 @MainActor
 final class CameraConnectionModel: ObservableObject {
     enum Phase: Equatable {
-        case idle, scanning, connecting, connected
+        case idle, scanning, connecting, connected, disconnecting
     }
 
     struct DeviceRow: Identifiable {
@@ -31,6 +31,16 @@ final class CameraConnectionModel: ObservableObject {
     @Published private(set) var slotsBusy = false
     @Published private(set) var slots: [PictureControlSlot] = []
     @Published private(set) var clientName = PtpIpConnector.defaultPrimaryName
+    enum LiveViewPhase: Equatable { case idle, starting, streaming, stopping }
+    @Published private(set) var liveViewPhase: LiveViewPhase = .idle
+    @Published private(set) var liveViewJPEG: Data?
+    @Published private(set) var liveViewFrames = 0
+    @Published private(set) var liveViewMessage = "请手动开启取景"
+    var liveViewBusy: Bool { liveViewPhase != .idle }
+    var canStartLiveView: Bool {
+        phase == .connected && !liveViewBusy && !batteryBusy && !monitorBusy &&
+        !slotsBusy && !pairingBusy && !pairingPrepared
+    }
     @Published var manualHost = ""
     @Published private(set) var guidText = "加载中…"
 
@@ -38,6 +48,8 @@ final class CameraConnectionModel: ObservableObject {
 
     private var session: PtpIpSession?
     private var monitorTask: Task<Void, Never>?
+    private var liveViewTask: Task<Void, Never>?
+    private var liveViewStopRequested = false
 
     // MARK: - Identity
 
@@ -143,14 +155,21 @@ final class CameraConnectionModel: ObservableObject {
     }
 
     func disconnect(reason: String = "已断开") async {
-        // Reset state before suspension; a new session must not be erased by a late close.
+        // Block new work, let an in-flight live-view transaction finish, then stop it.
+        // iOS may suspend the app before cleanup finishes; camera state is not guaranteed.
+        guard phase != .disconnecting else { return }
+        phase = .disconnecting
         let oldSession = session
+        await stopLiveView()
         session = nil
         monitorTask?.cancel()
         monitorTask = nil
         phase = .idle
         monitorBusy = false
         slotsBusy = false
+        liveViewStopRequested = true
+        liveViewPhase = .idle
+        liveViewJPEG = nil
         slots = []
         deviceRows = []
         batteryLevel = nil
@@ -236,6 +255,120 @@ final class CameraConnectionModel: ObservableObject {
         }
     }
 
+    // MARK: - Explicit live view
+
+    func startLiveView() {
+        guard let active = session, canStartLiveView else { return }
+        liveViewStopRequested = false
+        liveViewPhase = .starting
+        liveViewJPEG = nil
+        liveViewFrames = 0
+        liveViewMessage = "正在开启取景…"
+        liveViewTask = Task { [weak self] in
+            guard let self else { return }
+            await self.runLiveView(active)
+        }
+    }
+
+    func stopLiveView() async {
+        guard let task = liveViewTask else { return }
+        liveViewStopRequested = true
+        liveViewPhase = .stopping
+        liveViewMessage = "正在停止取景…"
+        // Do not cancel an in-flight PTP transaction: finish it before issuing 0x9202.
+        await task.value
+    }
+
+    private func runLiveView(_ active: PtpIpSession) async {
+        var started = false
+        var fatal = false
+        do {
+            try await active.startLiveView()
+            started = true
+            guard session === active else { return }
+            if !liveViewStopRequested {
+                liveViewPhase = .streaming
+                liveViewMessage = "取景中"
+            }
+            log.add("实时取景已开启")
+            var misses = 0
+            while !liveViewStopRequested && session === active {
+                do {
+                    let bytes = try await active.fetchLiveViewJPEG()
+                    guard session === active else { return }
+                    if liveViewStopRequested { break }
+                    liveViewJPEG = bytes
+                    liveViewFrames += 1
+                    misses = 0
+                } catch PtpIpSessionError.timeout(let stage) {
+                    liveViewMessage = "取景超时（\(stage)），连接已关闭"
+                    fatal = true
+                    break
+                } catch PtpIpSessionError.operationFailed(let code, let op) {
+                    misses += 1
+                    if misses >= 5 {
+                        liveViewMessage = String(format: "取景命令 0x%04X 返回 0x%04X，已停止", op, code)
+                        break
+                    }
+                } catch PtpIpSessionError.malformed {
+                    misses += 1
+                    if misses >= 5 { liveViewMessage = "连续收到无效取景帧，已停止"; break }
+                } catch {
+                    liveViewMessage = "取景连接异常：\(describe(error))"
+                    fatal = true
+                    break
+                }
+                // Limit request rate; no overlapping frame requests or unbounded queue.
+                try? await Task.sleep(nanoseconds: misses > 0 ? 400_000_000 : 100_000_000)
+            }
+        } catch PtpIpSessionError.timeout(let stage) {
+            liveViewMessage = "开启取景超时（\(stage)），连接已关闭"
+            fatal = true
+        } catch PtpIpSessionError.operationFailed(let code, let op) {
+            liveViewMessage = String(format: "开启取景失败：0x%04X 返回 0x%04X", op, code)
+        } catch {
+            liveViewMessage = "开启取景失败：\(describe(error))"
+            fatal = true
+        }
+        guard session === active else { return }
+        if started && !fatal {
+            liveViewPhase = .stopping
+            do {
+                try await active.stopLiveView()
+                if liveViewStopRequested { liveViewMessage = "取景已停止" }
+                log.add("实时取景已停止")
+            } catch {
+                liveViewMessage = "停止取景失败，连接已关闭：\(describe(error))"
+                fatal = true
+            }
+        }
+        guard session === active else { return }
+        let finalMessage = liveViewMessage
+        liveViewJPEG = nil
+        liveViewPhase = .idle
+        liveViewTask = nil
+        liveViewStopRequested = false
+        if fatal {
+            // Avoid recursively awaiting this task via disconnect().
+            session = nil
+            monitorTask?.cancel()
+            monitorTask = nil
+            if phase != .disconnecting { phase = .idle }
+            monitorBusy = false
+            batteryBusy = false
+            slotsBusy = false
+            pairingBusy = false
+            pairingPrepared = false
+            pairingPIN = nil
+            batteryLevel = nil
+            slots = []
+            deviceRows = []
+            statusMessage = finalMessage
+            log.add(finalMessage)
+            await active.close()
+        }
+    }
+
     // MARK: - Idle connection monitoring
 
     private func startMonitor(for active: PtpIpSession) {
@@ -251,7 +384,7 @@ final class CameraConnectionModel: ObservableObject {
 
     private func probeIfIdle(_ active: PtpIpSession) async {
         guard session === active, phase == .connected, !batteryBusy, !pairingBusy,
-              !pairingPrepared, !slotsBusy, !monitorBusy else { return }
+              !pairingPrepared, !slotsBusy, !monitorBusy, !liveViewBusy else { return }
         monitorBusy = true
         do {
             try await active.probeConnection()
@@ -269,7 +402,7 @@ final class CameraConnectionModel: ObservableObject {
 
     func refreshSlots() async {
         guard let active = session, phase == .connected, !slotsBusy, !batteryBusy,
-              !monitorBusy, !pairingBusy, !pairingPrepared else { return }
+              !monitorBusy, !pairingBusy, !pairingPrepared, !liveViewBusy else { return }
         slotsBusy = true
         slots = []
         defer { if session === active { slotsBusy = false } }
@@ -291,7 +424,7 @@ final class CameraConnectionModel: ObservableObject {
     // MARK: - Read-only battery
 
     func refreshBattery() async {
-        guard let active = session, phase == .connected, !batteryBusy, !pairingPrepared, !pairingBusy, !monitorBusy, !slotsBusy else { return }
+        guard let active = session, phase == .connected, !batteryBusy, !pairingPrepared, !pairingBusy, !monitorBusy, !slotsBusy, !liveViewBusy else { return }
         batteryBusy = true
         defer { if session === active { batteryBusy = false } }
         do {
@@ -316,7 +449,7 @@ final class CameraConnectionModel: ObservableObject {
     // MARK: - Nikon host registration
 
     func prepareRegistration() async {
-        guard let session, !batteryBusy, !pairingBusy, !monitorBusy, !slotsBusy else { return }
+        guard let session, phase == .connected, !batteryBusy, !pairingBusy, !monitorBusy, !slotsBusy, !liveViewBusy else { return }
         pairingBusy = true
         defer { if self.session === session { pairingBusy = false } }
         do {
@@ -339,7 +472,7 @@ final class CameraConnectionModel: ObservableObject {
     }
 
     func confirmRegistration() async {
-        guard let session, !batteryBusy, !pairingBusy, !monitorBusy, !slotsBusy else { return }
+        guard let session, phase == .connected, !batteryBusy, !pairingBusy, !monitorBusy, !slotsBusy, !liveViewBusy else { return }
         pairingBusy = true
         defer { if self.session === session { pairingBusy = false } }
         do {

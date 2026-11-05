@@ -4,6 +4,7 @@ import ZboxCore
 struct AppRootView: View {
     @StateObject private var model = CameraConnectionModel()
     @State private var guidDraft = ""
+    @Environment(\.scenePhase) private var scenePhase
 
     private func slotDescription(_ slot: PictureControlSlot) -> String {
         switch slot.state {
@@ -18,7 +19,7 @@ struct AppRootView: View {
         NavigationStack {
             List {
                 Section("工程状态") {
-                    LabeledContent("阶段", value: "M1 连接中")
+                    LabeledContent("阶段", value: "M2 实时取景开发中")
                     LabeledContent("协议核心", value: "ZboxCore")
                 }
 
@@ -73,6 +74,16 @@ struct AppRootView: View {
                 }
 
                 if model.phase == .connected {
+                    Section("实时取景") {
+                        NavigationLink {
+                            LiveViewScreen(model: model)
+                        } label: {
+                            Label("打开取景页面", systemImage: "viewfinder")
+                        }
+                        Text("进入页面不会自动开启相机取景；可手动开始和停止。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+
                     Section("相机信息") {
                         ForEach(model.deviceRows) { row in
                             LabeledContent(row.title, value: row.value)
@@ -81,14 +92,14 @@ struct AppRootView: View {
                         Button(model.batteryBusy ? "读取中…" : "读取电池电量") {
                             Task { await model.refreshBattery() }
                         }
-                        .disabled(model.batteryBusy || model.pairingPrepared || model.pairingBusy || model.monitorBusy || model.slotsBusy)
+                        .disabled(model.batteryBusy || model.pairingPrepared || model.pairingBusy || model.monitorBusy || model.slotsBusy || model.liveViewBusy)
                     }
 
                     Section("自定义优化校准（只读）") {
                         Button(model.slotsBusy ? "读取中…" : "读取 C-1…C-9") {
                             Task { await model.refreshSlots() }
                         }
-                        .disabled(model.slotsBusy || model.batteryBusy || model.monitorBusy || model.pairingBusy || model.pairingPrepared)
+                        .disabled(model.slotsBusy || model.batteryBusy || model.monitorBusy || model.pairingBusy || model.pairingPrepared || model.liveViewBusy)
                         ForEach(model.slots) { slot in
                             LabeledContent("C-\(slot.index)", value: slotDescription(slot))
                         }
@@ -103,11 +114,11 @@ struct AppRootView: View {
                         Button("准备注册（0x952B）") {
                             Task { await model.prepareRegistration() }
                         }
-                        .disabled(model.pairingPrepared || model.batteryBusy || model.pairingBusy || model.monitorBusy || model.slotsBusy)
+                        .disabled(model.pairingPrepared || model.batteryBusy || model.pairingBusy || model.monitorBusy || model.slotsBusy || model.liveViewBusy)
                         Button("确认注册（0x935A，等待 8.5 秒）") {
                             Task { await model.confirmRegistration() }
                         }
-                        .disabled(!model.pairingPrepared || model.pairingBusy || model.batteryBusy || model.monitorBusy || model.slotsBusy)
+                        .disabled(!model.pairingPrepared || model.pairingBusy || model.batteryBusy || model.monitorBusy || model.slotsBusy || model.liveViewBusy)
                     }
 
                     Section {
@@ -141,5 +152,8 @@ struct AppRootView: View {
             .navigationTitle("Zbox")
         }
         .task { model.loadIdentity() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { Task { await model.stopLiveView() } }
+        }
     }
 }
