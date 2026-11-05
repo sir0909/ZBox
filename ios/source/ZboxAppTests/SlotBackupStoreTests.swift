@@ -17,6 +17,18 @@ final class SlotBackupStoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: badURL), damaged)
         XCTAssertFalse(listing.riskExists)
     }
+    func testReadPendingRequiresIntactBackupAndKeepsCorruption() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = SlotBackupStore(directory: folder), payload = RecipePayload.linearTemplate()
+        let backup = SlotWriteBackup(id: UUID(), cameraID: "camera-1", slot: 1, original: payload, proposed: payload, createdAt: Date())
+        try await store.saveAndVerifyBackup(backup); try await store.armAndVerifyRisk(backup)
+        let pending = try await store.readPendingRisk(); XCTAssertEqual(pending, backup)
+        let backupURL = folder.appendingPathComponent("backup-\(backup.id.uuidString).json")
+        try Data("bad".utf8).write(to: backupURL)
+        do { _ = try await store.readPendingRisk(); XCTFail("damaged backup accepted") } catch {}
+        let stillRisk = try await store.hasPendingRisk(); XCTAssertTrue(stillRisk)
+    }
     func testBackupRiskAndCorruptionFailClosed() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: folder) }

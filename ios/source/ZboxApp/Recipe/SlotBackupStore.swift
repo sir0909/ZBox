@@ -5,7 +5,7 @@ import ZboxCore
 
 /// App-local journal prototype. Do not connect to camera writes until its process-wide
 /// exclusivity, crash behavior, recovery UI and PTP lifecycle gates are verified.
-actor SlotBackupStore: SlotWriteJournal {
+actor SlotBackupStore: SlotWriteRecoveryJournal {
     enum Failure: Error { case invalid, pending, missing, tooMany }
     private struct Envelope: Codable {
         let record: Data
@@ -102,6 +102,15 @@ actor SlotBackupStore: SlotWriteJournal {
         guard try read(backupURL(backup.id)) == backup else { throw Failure.missing }
         try createExclusive(encode(backup), at: riskURL)
         guard try read(riskURL) == backup else { throw Failure.invalid }
+    }
+    /// Never silently discard unreadable pending risk or a missing/corrupt original backup.
+    func readPendingRisk() async throws -> SlotWriteBackup? {
+        try ensureDirectory()
+        guard FileManager.default.fileExists(atPath: riskURL.path) else { return nil }
+        let risk = try read(riskURL)
+        _ = try encode(risk)
+        guard try read(backupURL(risk.id)) == risk else { throw Failure.invalid }
+        return risk
     }
     func clearVerifiedRisk(_ backup: SlotWriteBackup) async throws {
         guard try read(riskURL) == backup else { throw Failure.invalid }
