@@ -49,11 +49,17 @@ final class CameraConnectionModel: ObservableObject {
     @Published private(set) var albumPreviewJPEG: Data?
     @Published private(set) var albumPreviewTitle = ""
     @Published private(set) var albumThumbnailPage = 0
+    @Published private(set) var albumFilter: AlbumMediaFilter = .all
+    @Published private(set) var albumSort: AlbumSortOrder = .newest
+    var albumDisplayedItems: [NikonSTAAlbumItem] {
+        AlbumBrowse.apply(albumItems, filter: albumFilter, order: albumSort)
+    }
     @Published private(set) var albumThumbnails: [String: Data] = [:]
     @Published private(set) var albumThumbnailCompleted = 0
     var currentThumbnailItems: [NikonSTAAlbumItem] {
-        guard albumThumbnailPage < albumItems.count else { return [] }
-        return Array(albumItems.dropFirst(albumThumbnailPage).prefix(ThumbnailBatch.pageSize))
+        let items = albumDisplayedItems
+        guard albumThumbnailPage >= 0, albumThumbnailPage < items.count else { return [] }
+        return Array(items.dropFirst(albumThumbnailPage).prefix(ThumbnailBatch.pageSize))
     }
     private var albumCancelRequested = false
     @Published private(set) var captureBusy = false
@@ -634,11 +640,24 @@ final class CameraConnectionModel: ObservableObject {
         albumMessage = "缩略图：\(albumThumbnailCompleted)/\(total)；不可读项目保留占位"
     }
 
+    /// Changing the local view invalidates the single-page cache before any new fetch.
+    func setAlbumBrowse(filter: AlbumMediaFilter, order: AlbumSortOrder) {
+        guard !albumBusy, filter != albumFilter || order != albumSort else { return }
+        albumFilter = filter
+        albumSort = order
+        albumThumbnailPage = 0
+        albumThumbnailCompleted = 0
+        albumThumbnails = [:]
+        albumPreviewJPEG = nil
+        albumPreviewTitle = ""
+        albumMessage = "已更新筛选和排序；仅针对已读取的最多 500 项"
+    }
+
     func loadThumbnailPage(start: Int, automatic: Bool = false) async {
         guard !(automatic && albumCancelRequested), let active = session, phase == .connected, connectedSTA, !albumBusy,
               !liveViewBusy, !batteryBusy, !slotsBusy, !monitorBusy, !exposureBusy,
               !pairingBusy, !pairingPrepared, !captureBusy,
-              start >= 0, start < albumItems.count, start % ThumbnailBatch.pageSize == 0 else { return }
+              start >= 0, start < albumDisplayedItems.count, start % ThumbnailBatch.pageSize == 0 else { return }
         albumBusy = true
         albumCancelRequested = false
         albumThumbnailPage = start

@@ -31,7 +31,7 @@ struct STAAlbumScreen: View {
                 Button(model.albumBusy ? "相机处理中…" : "读取相册列表") {
                     Task {
                         await model.loadSTAAlbum()
-                        if isVisible, scenePhase == .active, model.mayAutoLoadThumbnails, !model.albumItems.isEmpty {
+                        if isVisible, scenePhase == .active, model.mayAutoLoadThumbnails, !model.albumDisplayedItems.isEmpty {
                             await model.loadThumbnailPage(start: 0, automatic: true)
                         }
                     }
@@ -61,19 +61,50 @@ struct STAAlbumScreen: View {
                     }
                 }
             }
-            Section("媒体（最多展示 500 项）") {
+            Section("媒体（最多读取 500 项）") {
                 if !model.albumItems.isEmpty {
+                    Picker("类型", selection: Binding(
+                        get: { model.albumFilter },
+                        set: { filter in
+                            model.setAlbumBrowse(filter: filter, order: model.albumSort)
+                            Task {
+                                if isVisible, scenePhase == .active, model.mayAutoLoadThumbnails {
+                                    await model.loadThumbnailPage(start: 0, automatic: true)
+                                }
+                            }
+                        })) {
+                        ForEach(AlbumMediaFilter.allCases, id: \.self) { value in Text(value.title).tag(value) }
+                    }.pickerStyle(.segmented).disabled(model.albumBusy)
+                    Picker("排序", selection: Binding(
+                        get: { model.albumSort },
+                        set: { order in
+                            model.setAlbumBrowse(filter: model.albumFilter, order: order)
+                            Task {
+                                if isVisible, scenePhase == .active, model.mayAutoLoadThumbnails {
+                                    await model.loadThumbnailPage(start: 0, automatic: true)
+                                }
+                            }
+                        })) {
+                        ForEach(AlbumSortOrder.allCases, id: \.self) { value in Text(value.title).tag(value) }
+                    }.disabled(model.albumBusy)
+                    Text("仅筛选已读取的最多 500 项；未知拍摄时间排在最后。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                if !model.albumItems.isEmpty && model.albumDisplayedItems.isEmpty {
+                    Text("当前筛选没有项目").foregroundStyle(.secondary)
+                }
+                if !model.albumDisplayedItems.isEmpty {
                     HStack {
                         Button("上一页") {
                             Task { await model.loadThumbnailPage(start: model.albumThumbnailPage - ThumbnailBatch.pageSize) }
                         }.disabled(model.albumBusy || model.albumThumbnailPage == 0)
                         Spacer()
-                        Text("\(model.albumThumbnailPage + 1)–\(min(model.albumThumbnailPage + ThumbnailBatch.pageSize, model.albumItems.count)) / \(model.albumItems.count)")
+                        Text("\(model.albumThumbnailPage + 1)–\(min(model.albumThumbnailPage + ThumbnailBatch.pageSize, model.albumDisplayedItems.count)) / \(model.albumDisplayedItems.count)")
                             .font(.caption.monospacedDigit())
                         Spacer()
                         Button("下一页") {
                             Task { await model.loadThumbnailPage(start: model.albumThumbnailPage + ThumbnailBatch.pageSize) }
-                        }.disabled(model.albumBusy || model.albumThumbnailPage + ThumbnailBatch.pageSize >= model.albumItems.count)
+                        }.disabled(model.albumBusy || model.albumThumbnailPage + ThumbnailBatch.pageSize >= model.albumDisplayedItems.count)
                     }
                     Button("重新加载本页缩略图") {
                         Task { await model.loadThumbnailPage(start: model.albumThumbnailPage) }
