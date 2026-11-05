@@ -41,7 +41,7 @@ targets:
           - "_nikon._tcp"
         NSCameraUsageDescription: "Zbox 需要相机连接权限,以便通过数据线(USB PTP)读取机身状态、实时取景与传输照片。"
         NSPhotoLibraryAddUsageDescription: "Zbox 需要相册写入权限,以便将从相机下载的照片和视频保存到手机相册。"
-        NSPhotoLibraryUsageDescription: "Zbox 需要访问相册以选择调色参考图和姿势参考图(所有图片仅在本地处理)。"
+        NSPhotoLibraryUsageDescription: "Zbox 需要访问相册以选择调色参考图和姿势参考图；AI 分析仅在您确认后向所选服务商上传缩略图。"
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
 

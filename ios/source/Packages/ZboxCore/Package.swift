@@ -8,7 +8,7 @@ let package = Package(
         .library(name: "ZboxCore", targets: ["ZboxCore"]),
     ],
     targets: [
-        .target(name: "ZboxCore"),
+        .target(name: "ZboxCore", resources: [.process("Resources")]),
         .testTarget(name: "ZboxCoreTests", dependencies: ["ZboxCore"]),
     ]
 )

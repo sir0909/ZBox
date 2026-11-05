@@ -79,6 +79,19 @@ final class RecipeWorkbench: ObservableObject {
         points = try CurveLUT.sample(RecipePayload.lut8(payload))
         curveEdited = false; self.metadata = metadata; message = notice
     }
+    func useAI(_ result: AIRecipe) throws {
+        let payload = try RecipePayload.edit(template: RecipePayload.linearTemplate(), name: result.name,
+                                             lut: CurveLUT.make(result.points))
+        try adopt(payload, notice: "已载入 AI 近似曲线，未写入相机。\(result.analysis)")
+        points = result.points
+    }
+    func useBuiltIn(_ entry: BuiltInPreset) {
+        do {
+            try adopt(entry.makePayload(), metadata: entry.shareMetadata,
+                      notice: "已载入内置曲线；基础参数和类型仅作元数据，尚未应用到预览或相机。")
+            points = entry.points
+        } catch { message = "内置预设无效；未替换当前草稿。" }
+    }
     func importBytes(_ data: Data) {
         do {
             let imported = try RecipePayload.importFile(data)

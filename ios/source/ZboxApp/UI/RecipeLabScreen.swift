@@ -23,13 +23,22 @@ struct RecipeLabScreen: View {
     @State private var showOriginal = false
     @State private var referenceGeneration = UUID()
     @State private var previewTask: Task<Void, Never>?
+    @AppStorage("ai.baseURL") private var aiBaseURL = "https://open.bigmodel.cn/api/paas/v4"
+    @AppStorage("ai.model") private var aiModel = "glm-4v-flash"
+    @State private var keyInput = ""
+    @State private var aiHint = ""
+    @State private var aiMessage = "需要视觉模型、服务商账号和 API Key。"
+    @State private var aiBusy = false
+    @State private var confirmAI = false
+    @State private var aiTask: Task<Void, Never>?
+
 
     private var curve: [UInt8] { (try? CurveLUT.make(workbench.points)) ?? (0...255).map(UInt8.init) }
     var body: some View {
         List {
             Section {
                 Text("RECIPE LAB / 本地配方工作台").font(.caption.bold()).foregroundStyle(.yellow)
-                Text("M3 开发中：本页只编辑本地曲线，不调用 AI 服务，不写入机身。")
+                Text("M3 开发中：本页本地编辑；AI 仅经确认后联网，不写入机身。")
                     .font(.footnote).foregroundStyle(.secondary)
                 TextField("机身名称（1–19 个 ASCII 字符）", text: $workbench.name)
                     .textInputAutocapitalization(.characters).autocorrectionDisabled()
@@ -50,6 +59,24 @@ struct RecipeLabScreen: View {
                         .disabled(referenceJPEG == nil)
                 }.buttonStyle(.bordered)
                 Text("仅在手机内生成最长边 768 像素的近似预览；本功能不上传、不修改原图，系统可能从 iCloud 下载。不代表尼康机身或 RAW 实际成像。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            Section("AI 参考图逆向 · 实验功能") {
+                TextField("HTTPS Base URL（不含 /chat/completions）", text: $aiBaseURL)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+                TextField("视觉模型名称", text: $aiModel).textInputAutocapitalization(.never).autocorrectionDisabled()
+                SecureField("API Key（保存到本机钥匙串）", text: $keyInput)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                HStack {
+                    Button("保存 Key") { saveAIKey() }
+                    Button("删除此服务 Key", role: .destructive) { deleteAIKey() }
+                }.buttonStyle(.bordered).disabled(aiBusy)
+                TextField("参考图风格要求（可选）", text: $aiHint, axis: .vertical).lineLimit(1...3)
+                Button("生成近似曲线") { confirmAI = true }
+                    .disabled(referenceJPEG == nil || aiBusy)
+                if aiBusy { ProgressView("等待服务商响应…") }
+                Text(aiMessage).font(.footnote).foregroundStyle(.secondary)
+                Text("仅生成全局曲线，不生成真实色彩匹配或机身参数；效果依赖服务商，可能产生费用。Key 仅保存在此设备钥匙串中。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Section("色调曲线 · 256 LUT") {
@@ -107,9 +134,8 @@ struct RecipeLabScreen: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Section("尚未接入") {
-                Label("AI 逆向生成", systemImage: "sparkles").foregroundStyle(.secondary)
                 Label("写入相机槽位", systemImage: "camera").foregroundStyle(.secondary)
-                Text("AI 服务与相机写入将在安全验证完成后开放。")
+                Text("相机写入将在安全验证完成后开放。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
         }
@@ -131,7 +157,13 @@ struct RecipeLabScreen: View {
             }
         }
         .onChange(of: workbench.points) { _, _ in updatePreview() }
-        .onDisappear { previewTask?.cancel(); referenceGeneration = UUID() }
+        .onDisappear { previewTask?.cancel(); aiTask?.cancel(); referenceGeneration = UUID() }
+        .confirmationDialog("向服务商上传参考图？", isPresented: $confirmAI, titleVisibility: .visible) {
+            Button("同意上传并生成") { startAI() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("将向 \(aiBaseURL) 发送去除元数据的参考图缩略图、文字要求和 API Key。图片将由该服务商处理，可能计费；请先确认服务商的隐私政策。不会自动写入相机。")
+        }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.data]) { result in
             do {
                 let url = try result.get()
@@ -152,6 +184,37 @@ struct RecipeLabScreen: View {
             }
         }
     }
+    private func saveAIKey() {
+        do {
+            let base = try AIKeyStore.validatedBase(aiBaseURL)
+            try AIKeyStore.save(keyInput, base: base); keyInput = ""
+            aiMessage = "Key 已保存到此设备钥匙串，仅用于当前 Base URL。"
+        } catch { aiMessage = "保存失败：请检查 HTTPS 地址及 Key。" }
+    }
+    private func deleteAIKey() {
+        do { try AIKeyStore.delete(base: AIKeyStore.validatedBase(aiBaseURL)); keyInput = ""; aiMessage = "当前地址的 Key 已删除。" }
+        catch { aiMessage = "删除失败，请检查地址或钥匙串状态。" }
+    }
+    private func startAI() {
+        guard !aiBusy, let jpeg = referenceJPEG else { return }
+        do {
+            let base = try AIKeyStore.validatedBase(aiBaseURL)
+            let key = try AIKeyStore.read(base: base)
+            let model = aiModel, hint = aiHint, generation = referenceGeneration
+            aiBusy = true; aiMessage = "已获得本次上传确认，正在生成…"
+            aiTask = Task {
+                defer { aiBusy = false }
+                do {
+                    let result = try await AIGrading.analyze(base: base, model: model, key: key, jpeg: jpeg, hint: hint)
+                    guard !Task.isCancelled, generation == referenceGeneration else { return }
+                    try workbench.useAI(result)
+                    updatePreview()
+                    aiMessage = "已载入 AI 近似曲线；请检查效果，不会自动写入相机。"
+                } catch is CancellationError { aiMessage = "请求已取消，服务商可能已收到数据。" }
+                catch { if !Task.isCancelled { aiMessage = "生成失败或输出未通过校验；草稿未改变。请检查配置、网络和视觉模型。" } }
+            }
+        } catch { aiMessage = "请先配置有效 HTTPS Base URL 并保存该地址的 Key。" }
+    }
     private func updatePreview() {
         previewTask?.cancel()
         guard let jpeg = referenceJPEG, let lut = try? workbench.previewLUT() else { processedPNG = nil; return }
@@ -168,12 +231,46 @@ struct RecipeLabScreen: View {
 struct LocalPresetLibraryScreen: View {
     @ObservedObject var workbench: RecipeWorkbench
     @State private var deleting: LocalRecipe?
+    @State private var builtIns: [BuiltInPreset] = []
+    @State private var catalogError = false
+    @State private var search = ""
+    @State private var category = "全部"
+    private var categories: [String] { ["全部"] + Array(Set(builtIns.map(\.categoryLabel))).sorted() }
+    private var filteredBuiltIns: [BuiltInPreset] {
+        builtIns.filter { item in
+            (category == "全部" || item.categoryLabel == category) &&
+            (search.isEmpty || (item.displayName + " " + item.cameraName + " " + item.note + " " + item.categoryLabel)
+                .localizedCaseInsensitiveContains(search))
+        }
+    }
     var body: some View {
         List {
             Section {
                 Text("PRESETS / 本地预设库").font(.caption.bold()).foregroundStyle(.yellow)
                 Text(workbench.message).font(.footnote).foregroundStyle(.secondary)
                 if workbench.entries.isEmpty { Text("尚无已保存的本地预设").foregroundStyle(.secondary) }
+            }
+            Section("内置预设 · 200 套") {
+                Text("移植自安卓现有预设数据。目前只载入曲线；基础参数和类别信息尚未应用，效果不等同安卓或机身。")
+                    .font(.footnote).foregroundStyle(.secondary)
+                if catalogError { Text("内置数据读取失败").foregroundStyle(.red) }
+                Picker("分类", selection: $category) {
+                    ForEach(categories, id: \.self) { Text($0).tag($0) }
+                }
+                TextField("搜索名称或描述", text: $search)
+                Text("显示 \(filteredBuiltIns.count) 套").font(.caption).foregroundStyle(.secondary)
+                ForEach(filteredBuiltIns) { entry in
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(entry.displayName).font(.headline)
+                            Spacer()
+                            Button("载入曲线") { workbench.useBuiltIn(entry) }
+                        }
+                        Text("\(entry.categoryLabel) · \(entry.cameraName) · \(entry.source == "derived" ? "衍生" : "NCP 数据")")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text(entry.note).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
             }
             Section("已保存") {
                 ForEach(workbench.entries) { entry in
@@ -190,6 +287,10 @@ struct LocalPresetLibraryScreen: View {
             }
         }
         .navigationTitle("预设库")
+        .task {
+            do { builtIns = try BuiltInPresetCatalog.load() }
+            catch { catalogError = true }
+        }
         .confirmationDialog("删除本地预设？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
             Button("删除本地副本", role: .destructive) { if let deleting { workbench.remove(deleting) }; deleting = nil }
             Button("取消", role: .cancel) { deleting = nil }
