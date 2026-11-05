@@ -66,6 +66,9 @@ final class RecipeWorkbench: ObservableObject {
         curveEdited = true
         message = "已载入本地示例曲线；尚未写入相机。"
     }
+    func previewLUT() throws -> [UInt8] {
+        curveEdited ? try CurveLUT.make(points) : try RecipePayload.lut8(template)
+    }
     func snapshot() throws -> Data {
         let lut = curveEdited ? try CurveLUT.make(points) : nil
         return try RecipePayload.edit(template: template, name: name.trimmingCharacters(in: .whitespaces), lut: lut)

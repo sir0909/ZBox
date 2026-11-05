@@ -1,5 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import PhotosUI
+import UIKit
 import ZboxCore
 
 struct RecipeDocument: FileDocument {
@@ -15,6 +17,12 @@ struct RecipeLabScreen: View {
     @State private var importing = false
     @State private var exporting = false
     @State private var exportDocument: RecipeDocument?
+    @State private var selectedPhoto: PhotosPickerItem?
+    @State private var referenceJPEG: Data?
+    @State private var processedPNG: Data?
+    @State private var showOriginal = false
+    @State private var referenceGeneration = UUID()
+    @State private var previewTask: Task<Void, Never>?
 
     private var curve: [UInt8] { (try? CurveLUT.make(workbench.points)) ?? (0...255).map(UInt8.init) }
     var body: some View {
@@ -26,6 +34,23 @@ struct RecipeLabScreen: View {
                 TextField("机身名称（1–19 个 ASCII 字符）", text: $workbench.name)
                     .textInputAutocapitalization(.characters).autocorrectionDisabled()
                 Text(workbench.message).font(.footnote).foregroundStyle(.secondary)
+            }
+            Section("参考图 · 手机本地预览") {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.12))
+                    if let data = (showOriginal ? referenceJPEG : processedPNG ?? referenceJPEG), let image = UIImage(data: data) {
+                        Image(uiImage: image).resizable().scaledToFit().clipShape(RoundedRectangle(cornerRadius: 8))
+                    } else {
+                        Label("请选择参考图", systemImage: "photo").foregroundStyle(.secondary)
+                    }
+                }.frame(maxWidth: .infinity).frame(height: 220).clipped()
+                HStack {
+                    PhotosPicker(selection: $selectedPhoto, matching: .images) { Label("选择参考图", systemImage: "photo.on.rectangle") }
+                    Button(showOriginal ? "显示效果" : "显示原图") { showOriginal.toggle() }
+                        .disabled(referenceJPEG == nil)
+                }.buttonStyle(.bordered)
+                Text("仅在手机内生成最长边 768 像素的近似预览；本功能不上传、不修改原图，系统可能从 iCloud 下载。不代表尼康机身或 RAW 实际成像。")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
             Section("色调曲线 · 256 LUT") {
                 Canvas { context, size in
@@ -75,7 +100,7 @@ struct RecipeLabScreen: View {
                     .textInputAutocapitalization(.never).autocorrectionDisabled().lineLimit(2...5)
                 HStack {
                     Button("生成") { workbench.makeShareCode() }
-                    Button("导入") { workbench.importShareCode() }
+                    Button("导入") { workbench.importShareCode(); updatePreview() }
                     if !workbench.shareText.isEmpty { ShareLink("分享", item: workbench.shareText) }
                 }.buttonStyle(.bordered)
                 Text("快传码只携带少量曲线点与参数，不保证 614B 或 15 位曲线无损；参数暂不应用。")
@@ -89,6 +114,24 @@ struct RecipeLabScreen: View {
             }
         }
         .navigationTitle("配方工作台")
+        .onChange(of: selectedPhoto) { _, item in
+            referenceGeneration = UUID()
+            let generation = referenceGeneration
+            previewTask?.cancel(); referenceJPEG = nil; processedPNG = nil; showOriginal = false
+            guard let item else { return }
+            Task {
+                do {
+                    guard let thumbnail = try await item.loadTransferable(type: ReferenceThumbnail.self),
+                          generation == referenceGeneration else { return }
+                    referenceJPEG = thumbnail.jpeg
+                    updatePreview()
+                } catch {
+                    if generation == referenceGeneration { workbench.message = "参考图读取失败或尺寸过大；未上传、未修改原图。" }
+                }
+            }
+        }
+        .onChange(of: workbench.points) { _, _ in updatePreview() }
+        .onDisappear { previewTask?.cancel(); referenceGeneration = UUID() }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.data]) { result in
             do {
                 let url = try result.get()
@@ -98,6 +141,7 @@ struct RecipeLabScreen: View {
                 let data = try handle.read(upToCount: 619) ?? Data()
                 guard data.count <= 618 else { workbench.message = "文件超过支持的长度；未导入。"; return }
                 workbench.importBytes(data)
+                updatePreview()
             } catch { workbench.message = "文件读取失败；未修改草稿。" }
         }
         .fileExporter(isPresented: $exporting, document: exportDocument, contentType: .data,
@@ -106,6 +150,17 @@ struct RecipeLabScreen: View {
             case .success: workbench.message = "已导出本地 NCP；尚未验证机身兼容性。"
             case .failure: workbench.message = "导出未完成；原草稿未改变。"
             }
+        }
+    }
+    private func updatePreview() {
+        previewTask?.cancel()
+        guard let jpeg = referenceJPEG, let lut = try? workbench.previewLUT() else { processedPNG = nil; return }
+        let generation = referenceGeneration
+        previewTask = Task {
+            do { try await Task.sleep(nanoseconds: 250_000_000) } catch { return }
+            let output = await Task.detached(priority: .utility) { ReferencePreview.apply(jpeg: jpeg, lut: lut) }.value
+            guard !Task.isCancelled, generation == referenceGeneration else { return }
+            processedPNG = output
         }
     }
 }
