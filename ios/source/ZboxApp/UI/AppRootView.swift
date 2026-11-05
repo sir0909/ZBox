@@ -106,7 +106,10 @@ struct AppRootView: View {
                         .disabled(model.batteryBusy || model.pairingPrepared || model.pairingBusy || model.monitorBusy || model.slotsBusy || model.liveViewBusy || model.exposureBusy || model.albumBusy || model.captureBusy)
                     }
 
-                    Section("曝光信息（只读）") {
+                    Section("曝光信息") {
+                        NavigationLink { ExposureEditorScreen(model: model) } label: {
+                            Label("实验性曝光设置", systemImage: "slider.horizontal.3")
+                        }
                         Button(model.exposureBusy ? "读取中…" : "读取曝光信息") {
                             Task { await model.refreshExposure() }
                         }
@@ -180,6 +183,7 @@ struct AppRootView: View {
             if phase != .active {
                 model.cancelAlbumWork()
                 model.cancelPendingCapture()
+                model.cancelPendingExposureWrite()
                 Task { await model.stopLiveView() }
             }
         }

@@ -32,6 +32,14 @@ final class CameraConnectionModel: ObservableObject {
     @Published private(set) var slots: [PictureControlSlot] = []
     @Published private(set) var exposureBusy = false
     @Published private(set) var exposureRows: [DeviceRow] = []
+    @Published private(set) var exposureDescriptor: ExposureDescriptor?
+    @Published private(set) var exposureEditMessage = "先读取相机支持的候选值"
+    @Published private(set) var exposureWriteInProgress = false
+    private var exposureWriteCancelled = false
+    var canEditExposure: Bool {
+        phase == .connected && !exposureBusy && !albumBusy && !captureBusy &&
+        !batteryBusy && !slotsBusy && !monitorBusy && !pairingBusy && !pairingPrepared && !liveViewBusy
+    }
     @Published private(set) var connectedSTA = false
     @Published private(set) var albumBusy = false
     @Published private(set) var albumItems: [NikonSTAAlbumItem] = []
@@ -176,6 +184,8 @@ final class CameraConnectionModel: ObservableObject {
         // iOS may suspend the app before cleanup finishes; camera state is not guaranteed.
         guard phase != .disconnecting else { return }
         let wasCapturing = captureBusy
+        let wasWritingExposure = exposureWriteInProgress
+        exposureWriteCancelled = true
         phase = .disconnecting
         captureCancelRequested = true
         albumCancelRequested = true
@@ -189,6 +199,8 @@ final class CameraConnectionModel: ObservableObject {
         slotsBusy = false
         exposureBusy = false
         exposureRows = []
+        exposureDescriptor = nil
+        exposureWriteInProgress = false
         connectedSTA = false
         albumBusy = false
         albumItems = []
@@ -205,7 +217,8 @@ final class CameraConnectionModel: ObservableObject {
         pairingPrepared = false
         pairingBusy = false
         needsRecovery = false
-        statusMessage = wasCapturing ? "拍摄结果可能未知，请先检查相机存储卡，勿重复拍摄" : reason
+        statusMessage = wasCapturing ? "拍摄结果可能未知，请先检查相机存储卡，勿重复拍摄" :
+            (wasWritingExposure ? "曝光设置结果可能未知，请先在机身检查，勿重复写入" : reason)
         log.add("会话已关闭")
         await oldSession?.close()
     }
@@ -394,6 +407,8 @@ final class CameraConnectionModel: ObservableObject {
             slotsBusy = false
             exposureBusy = false
             exposureRows = []
+            exposureDescriptor = nil
+            exposureWriteInProgress = false
             connectedSTA = false
             albumBusy = false
             albumItems = []
@@ -621,6 +636,78 @@ final class CameraConnectionModel: ObservableObject {
             albumMessage = "下载异常，不完整文件已删除：\(describe(error))"
             // A size-limit or transport error can leave a partial PTP transaction on the wire.
             await disconnect(reason: albumMessage)
+        }
+    }
+
+    // MARK: - Explicit exposure editing with typed descriptor and readback
+
+    func cancelPendingExposureWrite() {
+        // A write already on the wire cannot safely be cancelled or retried.
+        if exposureWriteInProgress { exposureWriteCancelled = true }
+    }
+
+    func loadExposureDescriptor(_ property: ExposureProperty) async {
+        guard let active = session, canEditExposure else { return }
+        exposureBusy = true
+        exposureDescriptor = nil
+        exposureEditMessage = "正在读取机身描述符…"
+        defer { if session === active { exposureBusy = false } }
+        do {
+            let descriptor = try await active.fetchExposureDescriptor(property)
+            guard session === active, phase == .connected else { return }
+            exposureDescriptor = descriptor
+            exposureEditMessage = descriptor.writable ? "请选择机身声明的候选值" : "机身报告此属性只读，无法修改"
+        } catch PtpIpSessionError.operationFailed(let code, _) {
+            if session === active { exposureEditMessage = String(format: "机身不提供描述符：0x%04X", code) }
+        } catch PtpIpSessionError.malformed {
+            if session === active { exposureEditMessage = "描述符类型或范围未识别，已禁止写入" }
+        } catch {
+            guard session === active, phase == .connected else { return }
+            exposureEditMessage = "读取描述符失败：\(describe(error))"
+            await disconnect(reason: exposureEditMessage)
+        }
+    }
+
+    private func mayCommitExposure(_ active: PtpIpSession) -> Bool {
+        session === active && phase == .connected && exposureWriteInProgress && !exposureWriteCancelled
+    }
+
+    func writeExposure(_ descriptor: ExposureDescriptor, desired: Data) async {
+        guard let active = session, canEditExposure, exposureDescriptor == descriptor,
+              descriptor.writable, descriptor.choices.contains(desired) else { return }
+        exposureBusy = true
+        exposureWriteInProgress = true
+        exposureWriteCancelled = false
+        exposureEditMessage = "正在重新核实机身状态并读回…"
+        defer {
+            if session === active { exposureBusy = false; exposureWriteInProgress = false }
+        }
+        do {
+            let result = try await active.writeExposureOnce(property: descriptor.property,
+                expectedCurrent: descriptor.current, desired: desired, shouldContinue: { [weak self, weak active] in
+                    guard let self, let active else { return false }
+                    return await self.mayCommitExposure(active)
+                })
+            guard session === active, phase == .connected else { return }
+            exposureDescriptor = nil
+            exposureEditMessage = result == .verified ? "写入后读回一致（未经真机验收）" : "机身当前已是所选值，无需写入"
+            log.add("曝光写入已完成读回校验（值不写入日志）")
+        } catch ExposureWriteError.cancelledBeforeWrite {
+            if session === active { exposureEditMessage = "已取消，未发送写入命令" }
+        } catch ExposureWriteError.staleCurrentValue {
+            if session === active { exposureDescriptor = nil; exposureEditMessage = "机身当前值已变化，未写入；请重新读取" }
+        } catch ExposureWriteError.notWritableOrValueNotAllowed {
+            if session === active { exposureDescriptor = nil; exposureEditMessage = "机身不再允许所选值，未写入；请重新读取" }
+        } catch ExposureWriteError.readbackMismatch {
+            if session === active { exposureDescriptor = nil; exposureEditMessage = "机身读回不一致；设置结果未确认，请在机身检查" }
+        } catch PtpIpSessionError.operationFailed(let code, let op) {
+            if session === active { exposureDescriptor = nil; exposureEditMessage = String(format: "机身拒绝命令 0x%04X：0x%04X；请检查设置", op, code) }
+        } catch {
+            guard session === active, phase == .connected else { return }
+            exposureDescriptor = nil
+            exposureEditMessage = "设置结果可能未知；请在机身检查，勿重复写入：\(describe(error))"
+            log.add(exposureEditMessage)
+            await disconnect(reason: exposureEditMessage)
         }
     }
 
