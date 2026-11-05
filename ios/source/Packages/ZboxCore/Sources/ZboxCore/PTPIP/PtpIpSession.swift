@@ -160,17 +160,27 @@ public actor PtpIpSession {
             throw PtpIpSessionError.malformed(stage: "命令", detail: "数据长度上限非法")
         }
         let timeout = timeoutSeconds ?? config.commandTimeoutSeconds
+        let generation = sessionGeneration
+        return try await lock.withLock { [self] in
+            try await self.executeWhileLocked(opCode: opCode, params: params, expectData: expectData,
+                                              timeout: timeout, maxDataBytes: maxDataBytes, generation: generation)
+        }
+    }
+
+    /// Validate after acquiring the transaction lock; a queued command must not run on
+    /// a session closed/replaced while it was waiting. Invalidate fatal errors before
+    /// releasing the lock so the next waiter cannot send onto a poisoned stream.
+    private func executeWhileLocked(opCode: UInt16, params: [UInt32], expectData: Bool, timeout: Double,
+                                    maxDataBytes: Int, generation: UInt64) async throws -> PtpOperationResult {
+        guard connectionInfo != nil, sessionGeneration == generation else { throw PtpIpSessionError.notConnected }
         do {
-            return try await lock.withLock { [self] in
-                try await self.runOperation(opCode: opCode, params: params, expectData: expectData, timeout: timeout, maxDataBytes: maxDataBytes)
-            }
+            return try await runOperation(opCode: opCode, params: params, expectData: expectData,
+                                          timeout: timeout, maxDataBytes: maxDataBytes)
         } catch PtpIpSessionError.timeout(let stage) {
-            // A timed-out transaction has a closed channel and cannot be reused safely.
-            await close()
+            if sessionGeneration == generation { await close() }
             throw PtpIpSessionError.timeout(stage: stage)
         } catch PtpIpSessionError.dataLimitExceeded(let limit) {
-            // The remainder of the transaction may still be on the wire.
-            await close()
+            if sessionGeneration == generation { await close() }
             throw PtpIpSessionError.dataLimitExceeded(limit: limit)
         }
     }
@@ -286,15 +296,24 @@ public actor PtpIpSession {
                                   shouldContinue: @escaping @Sendable () async -> Bool) async throws -> ExposureWriteResult {
         guard connectionInfo != nil else { throw PtpIpSessionError.notConnected }
         let generation = sessionGeneration
+        return try await lock.withLock { [self] in
+            try await self.performExposureWriteWhileLocked(property: property, expectedType: expectedType,
+                expectedCurrent: expectedCurrent, desired: desired, generation: generation, shouldContinue: shouldContinue)
+        }
+    }
+
+    private func performExposureWriteWhileLocked(property: ExposureProperty, expectedType: UInt16,
+        expectedCurrent: Data, desired: Data, generation: UInt64,
+        shouldContinue: @escaping @Sendable () async -> Bool) async throws -> ExposureWriteResult {
         do {
-            return try await lock.withLock { [self] in
-                try await self.performExposureWrite(property: property, expectedType: expectedType, expectedCurrent: expectedCurrent,
-                                                    desired: desired, generation: generation, shouldContinue: shouldContinue)
-            }
+            return try await performExposureWrite(property: property, expectedType: expectedType,
+                expectedCurrent: expectedCurrent, desired: desired, generation: generation, shouldContinue: shouldContinue)
         } catch PtpIpSessionError.timeout(let stage) {
-            await close(); throw PtpIpSessionError.timeout(stage: stage)
+            if sessionGeneration == generation { await close() }
+            throw PtpIpSessionError.timeout(stage: stage)
         } catch PtpIpSessionError.dataLimitExceeded(let limit) {
-            await close(); throw PtpIpSessionError.dataLimitExceeded(limit: limit)
+            if sessionGeneration == generation { await close() }
+            throw PtpIpSessionError.dataLimitExceeded(limit: limit)
         }
     }
 
@@ -486,11 +505,13 @@ public actor PtpIpSession {
     // MARK: - Lifecycle
 
     public func close() async {
+        // Invalidate synchronously before awaiting channel closure, so reentrant calls
+        // cannot see the old connection as usable while closeChannels suspends.
         sessionGeneration &+= 1
-        await closeChannels()
         connectionInfo = nil
         deviceInfo = nil
         pairingPreparedAtMs = nil
+        await closeChannels()
     }
 
     private func closeChannels() async {

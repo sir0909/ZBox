@@ -124,6 +124,8 @@ struct LiveViewScreen: View {
         }
         .onDisappear {
             if landscapeRequested { requestOrientation(.portrait, reportErrors: false) }
+            landscapeRequested = false
+            orientationMessage = ""
             model.cancelPendingCapture()
             Task { await model.stopLiveView() }
         }
