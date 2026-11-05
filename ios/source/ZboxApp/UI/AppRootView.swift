@@ -5,6 +5,15 @@ struct AppRootView: View {
     @StateObject private var model = CameraConnectionModel()
     @State private var guidDraft = ""
 
+    private func slotDescription(_ slot: PictureControlSlot) -> String {
+        switch slot.state {
+        case .loaded(let name, _): return name
+        case .empty: return "空槽"
+        case .unavailable(let code): return String(format: "不可读（0x%04X）", Int(code))
+        case .unexpectedData(let bytes): return "数据格式未知（\(bytes) 字节）"
+        }
+    }
+
     var body: some View {
         NavigationStack {
             List {
@@ -25,6 +34,7 @@ struct AppRootView: View {
                         Button("连接 \(endpoint.cameraAddress)（\(endpoint.interfaceName)）") {
                             Task { await model.connect(endpoint) }
                         }
+                        .disabled(model.phase != .idle)
                     }
 
                     TextField("相机 IP（手动，例如 172.20.10.2）", text: $model.manualHost)
@@ -56,10 +66,19 @@ struct AppRootView: View {
                         Button(model.batteryBusy ? "读取中…" : "读取电池电量") {
                             Task { await model.refreshBattery() }
                         }
-                        .disabled(model.batteryBusy || model.pairingPrepared || model.pairingBusy)
-                        Text("C-1…C-9 设置槽尚未接入。")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
+                        .disabled(model.batteryBusy || model.pairingPrepared || model.pairingBusy || model.monitorBusy || model.slotsBusy)
+                    }
+
+                    Section("自定义优化校准（只读）") {
+                        Button(model.slotsBusy ? "读取中…" : "读取 C-1…C-9") {
+                            Task { await model.refreshSlots() }
+                        }
+                        .disabled(model.slotsBusy || model.batteryBusy || model.monitorBusy || model.pairingBusy || model.pairingPrepared)
+                        ForEach(model.slots) { slot in
+                            LabeledContent("C-\(slot.index)", value: slotDescription(slot))
+                        }
+                        Text("未授权或拒绝访问可能是空槽，也可能是权限不足；不会修改相机设置。")
+                            .font(.footnote).foregroundStyle(.secondary)
                     }
 
                     Section("主机注册") {
@@ -69,11 +88,11 @@ struct AppRootView: View {
                         Button("准备注册（0x952B）") {
                             Task { await model.prepareRegistration() }
                         }
-                        .disabled(model.pairingPrepared || model.batteryBusy || model.pairingBusy)
+                        .disabled(model.pairingPrepared || model.batteryBusy || model.pairingBusy || model.monitorBusy || model.slotsBusy)
                         Button("确认注册（0x935A，等待 8.5 秒）") {
                             Task { await model.confirmRegistration() }
                         }
-                        .disabled(!model.pairingPrepared || model.pairingBusy || model.batteryBusy)
+                        .disabled(!model.pairingPrepared || model.pairingBusy || model.batteryBusy || model.monitorBusy || model.slotsBusy)
                     }
 
                     Section {

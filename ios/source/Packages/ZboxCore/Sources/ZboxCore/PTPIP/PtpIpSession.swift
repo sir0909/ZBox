@@ -193,6 +193,25 @@ public actor PtpIpSession {
         return value
     }
 
+    /// Idle PTP/IP health check. Any valid PTP response demonstrates reachability,
+    /// including an operation-not-supported response (matching the Android implementation).
+    public func probeConnection() async throws {
+        _ = try await execute(opCode: PtpOpCode.getStorageIDs, expectData: true, timeoutSeconds: 4)
+    }
+
+    /// Reads exactly one Nikon custom picture-control slot. This is read-only.
+    public func fetchPictureControl(index: Int) async throws -> PictureControlSlot {
+        guard (1...9).contains(index) else {
+            throw PtpIpSessionError.malformed(stage: "PictureControl", detail: "slot must be C-1 through C-9")
+        }
+        let result = try await execute(
+            opCode: PtpOpCode.nikonGetPictureControl,
+            params: [UInt32(0x00C8 + index), 0],
+            expectData: true, timeoutSeconds: 6
+        )
+        return PictureControlSlot.decode(index: index, responseCode: result.response.code, data: result.data)
+    }
+
     private func runOperation(
         opCode: UInt16,
         params: [UInt32],

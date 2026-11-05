@@ -24,6 +24,9 @@ final class CameraConnectionModel: ObservableObject {
     @Published private(set) var pairingBusy = false
     @Published private(set) var batteryLevel: UInt8?
     @Published private(set) var batteryBusy = false
+    @Published private(set) var monitorBusy = false
+    @Published private(set) var slotsBusy = false
+    @Published private(set) var slots: [PictureControlSlot] = []
     @Published private(set) var clientName = PtpIpConnector.defaultPrimaryName
     @Published var manualHost = ""
     @Published private(set) var guidText = "加载中…"
@@ -31,6 +34,7 @@ final class CameraConnectionModel: ObservableObject {
     let log = DiagnosticLog()
 
     private var session: PtpIpSession?
+    private var monitorTask: Task<Void, Never>?
 
     // MARK: - Identity
 
@@ -73,7 +77,7 @@ final class CameraConnectionModel: ObservableObject {
     // MARK: - Discovery and connection
 
     func scan() async {
-        guard phase != .scanning else { return }
+        guard phase == .idle else { return }
         phase = .scanning
         candidates = []
         log.add("开始热点相机扫描（bridge/en 私有子网，TCP 15740）")
@@ -97,10 +101,12 @@ final class CameraConnectionModel: ObservableObject {
     }
 
     func connect(_ endpoint: HotspotCameraEndpoint) async {
+        guard phase == .idle else { return }
         await openSession(host: endpoint.cameraAddress, localAddress: endpoint.phoneAddress)
     }
 
     func connectManual() async {
+        guard phase == .idle else { return }
         let host = manualHost.trimmingCharacters(in: .whitespaces)
         guard HotspotAddressPlanner.parseIPv4(host) != nil else {
             statusMessage = "请输入有效的 IPv4 地址，例如 172.20.10.2"
@@ -109,9 +115,16 @@ final class CameraConnectionModel: ObservableObject {
         await openSession(host: host, localAddress: nil)
     }
 
-    func disconnect() async {
-        await session?.close()
+    func disconnect(reason: String = "已断开") async {
+        // Reset state before suspension; a new session must not be erased by a late close.
+        let oldSession = session
         session = nil
+        monitorTask?.cancel()
+        monitorTask = nil
+        phase = .idle
+        monitorBusy = false
+        slotsBusy = false
+        slots = []
         deviceRows = []
         batteryLevel = nil
         batteryBusy = false
@@ -119,9 +132,9 @@ final class CameraConnectionModel: ObservableObject {
         pairingPrepared = false
         pairingBusy = false
         needsRecovery = false
-        phase = .idle
-        statusMessage = "已断开"
+        statusMessage = reason
         log.add("会话已关闭")
+        await oldSession?.close()
     }
 
     private func openSession(host: String, localAddress: String?) async {
@@ -172,6 +185,7 @@ final class CameraConnectionModel: ObservableObject {
             log.add("设备信息已读取：Nikon \(NikonConnectionPolicy.normalizedModel(device.model))，操作数 \(device.operations.count)")
             phase = .connected
             statusMessage = "已连接 \(NikonConnectionPolicy.normalizedModel(device.model))"
+            startMonitor(for: connected.session)
         } catch PtpIpSessionError.initFailed(let reason) where reason == PtpIpInitFailReason.rejected.rawValue {
             needsRecovery = true
             phase = .idle
@@ -186,10 +200,62 @@ final class CameraConnectionModel: ObservableObject {
         }
     }
 
+    // MARK: - Idle connection monitoring
+
+    private func startMonitor(for active: PtpIpSession) {
+        monitorTask?.cancel()
+        monitorTask = Task { [weak self, weak active] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 15_000_000_000) } catch { return }
+                guard let self, let active else { return }
+                await self.probeIfIdle(active)
+            }
+        }
+    }
+
+    private func probeIfIdle(_ active: PtpIpSession) async {
+        guard session === active, phase == .connected, !batteryBusy, !pairingBusy,
+              !pairingPrepared, !slotsBusy, !monitorBusy else { return }
+        monitorBusy = true
+        do {
+            try await active.probeConnection()
+            guard session === active else { return }
+            monitorBusy = false
+        } catch {
+            guard session === active, !Task.isCancelled else { return }
+            monitorBusy = false
+            log.add("连接监测失败，旧会话已关闭：\(describe(error))")
+            await disconnect(reason: "相机连接已中断，请重新连接")
+        }
+    }
+
+    // MARK: - Read-only picture controls
+
+    func refreshSlots() async {
+        guard let active = session, phase == .connected, !slotsBusy, !batteryBusy,
+              !monitorBusy, !pairingBusy, !pairingPrepared else { return }
+        slotsBusy = true
+        slots = []
+        defer { if session === active { slotsBusy = false } }
+        for index in 1...9 {
+            do {
+                let slot = try await active.fetchPictureControl(index: index)
+                guard session === active, phase == .connected else { return }
+                slots.append(slot)
+            } catch {
+                guard session === active, phase == .connected else { return }
+                log.add("读取槽位失败，旧会话已关闭：\(describe(error))")
+                await disconnect(reason: "读取 C-\(index) 时连接中断，请重新连接")
+                return
+            }
+        }
+        log.add("C-1…C-9 只读扫描结束，未修改相机数据")
+    }
+
     // MARK: - Read-only battery
 
     func refreshBattery() async {
-        guard let active = session, phase == .connected, !batteryBusy, !pairingPrepared, !pairingBusy else { return }
+        guard let active = session, phase == .connected, !batteryBusy, !pairingPrepared, !pairingBusy, !monitorBusy, !slotsBusy else { return }
         batteryBusy = true
         defer { if session === active { batteryBusy = false } }
         do {
@@ -214,7 +280,7 @@ final class CameraConnectionModel: ObservableObject {
     // MARK: - Nikon host registration
 
     func prepareRegistration() async {
-        guard let session, !batteryBusy, !pairingBusy else { return }
+        guard let session, !batteryBusy, !pairingBusy, !monitorBusy, !slotsBusy else { return }
         pairingBusy = true
         defer { if self.session === session { pairingBusy = false } }
         do {
@@ -237,7 +303,7 @@ final class CameraConnectionModel: ObservableObject {
     }
 
     func confirmRegistration() async {
-        guard let session, !batteryBusy, !pairingBusy else { return }
+        guard let session, !batteryBusy, !pairingBusy, !monitorBusy, !slotsBusy else { return }
         pairingBusy = true
         defer { if self.session === session { pairingBusy = false } }
         do {
@@ -261,9 +327,8 @@ final class CameraConnectionModel: ObservableObject {
     // MARK: - Helpers
 
     private func handleTimeout(_ stage: String) async {
-        await disconnect()
-        statusMessage = "\(stage)超时，连接已关闭；请重新连接"
         log.add("\(stage)超时，已关闭失效会话")
+        await disconnect(reason: "\(stage)超时，连接已关闭；请重新连接")
     }
 
     private func maskSerial(_ serial: String) -> String {
