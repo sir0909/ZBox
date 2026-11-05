@@ -50,6 +50,12 @@ struct STAAlbumScreen: View {
                     ShareLink(item: url) { Label("分享 / 保存已下载文件", systemImage: "square.and.arrow.up") }
                     Text("文件暂存在应用临时目录，请及时分享保存；不自动写入照片图库。")
                         .font(.footnote).foregroundStyle(.secondary)
+                    if let sha256 = model.albumDownloadSHA256 {
+                        Text("接收数据 SHA-256（可用于后续比对）").font(.caption)
+                        Text(sha256).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                        Text("由下载过程中的接收数据计算，未重新读取保存的文件；相机未提供校验和，不能证明与相机原文件一致。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
                 }
             }
             if let jpeg = model.albumPreviewJPEG {

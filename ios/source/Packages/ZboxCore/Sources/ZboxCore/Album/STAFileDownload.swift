@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 public enum STAFileDownloadError: Error, Equatable, Sendable {
     case invalidSize
@@ -7,6 +8,13 @@ public enum STAFileDownloadError: Error, Equatable, Sendable {
     case invalidChunk
     case lengthMismatch
     case unableToCreateFile
+}
+
+/// SHA-256 of the bytes received and successfully written during the transfer.
+/// It is not a hash supplied by the camera and is not an independent disk readback.
+public struct STAFileDownloadResult: Sendable {
+    public let url: URL
+    public let receivedSHA256: String
 }
 
 /// Cancellable, bounded sequential transfer to a unique temporary directory.
@@ -22,7 +30,7 @@ public enum STAFileDownload {
         shouldContinue: @escaping @Sendable () async -> Bool,
         fetch: @escaping @Sendable (_ offset: UInt64, _ length: Int) async throws -> Data,
         progress: @escaping @Sendable (_ completed: UInt64, _ total: UInt64) async -> Void = { _, _ in }
-    ) async throws -> URL {
+    ) async throws -> STAFileDownloadResult {
         guard size > 0, size <= maxSize else { throw STAFileDownloadError.invalidSize }
         let permitted = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
         guard !fileName.isEmpty, fileName.count <= 64, !fileName.hasPrefix("."),
@@ -44,6 +52,7 @@ public enum STAFileDownload {
         let writer = try FileHandle(forWritingTo: partial)
         defer { try? writer.close() }
         var offset: UInt64 = 0
+        var digest = SHA256()
         while offset < size {
             guard await shouldContinue() else { throw CancellationError() }
             let wanted = Int(min(UInt64(chunkBytes), size - offset))
@@ -51,6 +60,7 @@ public enum STAFileDownload {
             guard await shouldContinue() else { throw CancellationError() }
             guard !data.isEmpty, data.count <= wanted else { throw STAFileDownloadError.invalidChunk }
             try writer.write(contentsOf: data)
+            digest.update(data: data)
             offset += UInt64(data.count)
             await progress(offset, size)
         }
@@ -59,7 +69,8 @@ public enum STAFileDownload {
         guard actual?.uint64Value == size else { throw STAFileDownloadError.lengthMismatch }
         guard await shouldContinue() else { throw CancellationError() }
         try fm.moveItem(at: partial, to: final)
+        let receivedSHA256 = digest.finalize().map { String(format: "%02x", $0) }.joined()
         completed = true
-        return final
+        return STAFileDownloadResult(url: final, receivedSHA256: receivedSHA256)
     }
 }

@@ -46,6 +46,7 @@ final class CameraConnectionModel: ObservableObject {
     @Published private(set) var albumMessage = "手动读取相机相册（仅 STA）"
     @Published private(set) var albumProgress: Double?
     @Published private(set) var albumDownloadURL: URL?
+    @Published private(set) var albumDownloadSHA256: String?
     @Published private(set) var albumPreviewJPEG: Data?
     @Published private(set) var albumPreviewTitle = ""
     @Published private(set) var albumThumbnailPage = 0
@@ -744,6 +745,7 @@ final class CameraConnectionModel: ObservableObject {
         albumCancelRequested = false
         albumProgress = 0
         albumDownloadURL = nil
+        albumDownloadSHA256 = nil
         albumMessage = "正在读取文件大小…"
         defer { if session === active { albumBusy = false; albumProgress = nil } }
         do {
@@ -760,12 +762,13 @@ final class CameraConnectionModel: ObservableObject {
                     await self.reportAlbumProgress(active, offset: offset, total: size)
                 })
             guard session === active, phase == .connected, !albumCancelRequested else {
-                try? FileManager.default.removeItem(at: completed.deletingLastPathComponent())
+                try? FileManager.default.removeItem(at: completed.url.deletingLastPathComponent())
                 return
             }
-            albumDownloadURL = completed
+            albumDownloadURL = completed.url
+            albumDownloadSHA256 = completed.receivedSHA256
             albumMessage = "下载完成；请使用分享保存。名称为占位名，临时文件可能被系统清理。"
-            log.add("STA 相册原文件下载完成，长度已核对；未验证文件内容")
+            log.add("STA 相册原文件下载完成，长度已核对；本地接收摘要不代表源文件内容已校验")
         } catch is CancellationError {
             if session === active { albumMessage = "下载已取消；不完整文件已删除" }
         } catch PtpIpSessionError.operationFailed(let code, let op) {
