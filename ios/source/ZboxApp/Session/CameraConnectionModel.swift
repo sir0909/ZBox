@@ -30,6 +30,8 @@ final class CameraConnectionModel: ObservableObject {
     @Published private(set) var monitorBusy = false
     @Published private(set) var slotsBusy = false
     @Published private(set) var slots: [PictureControlSlot] = []
+    @Published private(set) var exposureBusy = false
+    @Published private(set) var exposureRows: [DeviceRow] = []
     @Published private(set) var clientName = PtpIpConnector.defaultPrimaryName
     enum LiveViewPhase: Equatable { case idle, starting, streaming, stopping }
     @Published private(set) var liveViewPhase: LiveViewPhase = .idle
@@ -39,7 +41,7 @@ final class CameraConnectionModel: ObservableObject {
     var liveViewBusy: Bool { liveViewPhase != .idle }
     var canStartLiveView: Bool {
         phase == .connected && !liveViewBusy && !batteryBusy && !monitorBusy &&
-        !slotsBusy && !pairingBusy && !pairingPrepared
+        !slotsBusy && !exposureBusy && !pairingBusy && !pairingPrepared
     }
     @Published var manualHost = ""
     @Published private(set) var guidText = "加载中…"
@@ -167,6 +169,8 @@ final class CameraConnectionModel: ObservableObject {
         phase = .idle
         monitorBusy = false
         slotsBusy = false
+        exposureBusy = false
+        exposureRows = []
         liveViewStopRequested = true
         liveViewPhase = .idle
         liveViewJPEG = nil
@@ -280,6 +284,13 @@ final class CameraConnectionModel: ObservableObject {
     }
 
     private func runLiveView(_ active: PtpIpSession) async {
+        if liveViewStopRequested {
+            liveViewPhase = .idle
+            liveViewTask = nil
+            liveViewStopRequested = false
+            liveViewMessage = "取景未开启"
+            return
+        }
         var started = false
         var fatal = false
         do {
@@ -357,6 +368,8 @@ final class CameraConnectionModel: ObservableObject {
             monitorBusy = false
             batteryBusy = false
             slotsBusy = false
+            exposureBusy = false
+            exposureRows = []
             pairingBusy = false
             pairingPrepared = false
             pairingPIN = nil
@@ -384,7 +397,7 @@ final class CameraConnectionModel: ObservableObject {
 
     private func probeIfIdle(_ active: PtpIpSession) async {
         guard session === active, phase == .connected, !batteryBusy, !pairingBusy,
-              !pairingPrepared, !slotsBusy, !monitorBusy, !liveViewBusy else { return }
+              !pairingPrepared, !slotsBusy, !monitorBusy, !exposureBusy, !liveViewBusy else { return }
         monitorBusy = true
         do {
             try await active.probeConnection()
@@ -402,7 +415,7 @@ final class CameraConnectionModel: ObservableObject {
 
     func refreshSlots() async {
         guard let active = session, phase == .connected, !slotsBusy, !batteryBusy,
-              !monitorBusy, !pairingBusy, !pairingPrepared, !liveViewBusy else { return }
+              !monitorBusy, !pairingBusy, !pairingPrepared, !exposureBusy, !liveViewBusy else { return }
         slotsBusy = true
         slots = []
         defer { if session === active { slotsBusy = false } }
@@ -421,10 +434,33 @@ final class CameraConnectionModel: ObservableObject {
         log.add("C-1…C-9 只读扫描结束，未修改相机数据")
     }
 
+    // MARK: - Read-only exposure values (never write camera settings)
+
+    func refreshExposure() async {
+        guard let active = session, phase == .connected, !exposureBusy, !batteryBusy,
+              !slotsBusy, !monitorBusy, !pairingBusy, !pairingPrepared, !liveViewBusy else { return }
+        exposureBusy = true
+        exposureRows = []
+        defer { if session === active { exposureBusy = false } }
+        for property in ExposureProperty.allCases {
+            do {
+                let value = try await active.fetchExposure(property)
+                guard session === active, phase == .connected else { return }
+                exposureRows.append(DeviceRow(title: property.title, value: value ?? "不可读 / 格式未知"))
+            } catch {
+                guard session === active, phase == .connected else { return }
+                log.add("曝光信息读取失败：\(describe(error))")
+                await disconnect(reason: "曝光信息读取中断，连接已关闭；请重新连接")
+                return
+            }
+        }
+        log.add("只读曝光信息读取完成；未修改相机设置")
+    }
+
     // MARK: - Read-only battery
 
     func refreshBattery() async {
-        guard let active = session, phase == .connected, !batteryBusy, !pairingPrepared, !pairingBusy, !monitorBusy, !slotsBusy, !liveViewBusy else { return }
+        guard let active = session, phase == .connected, !batteryBusy, !pairingPrepared, !pairingBusy, !monitorBusy, !slotsBusy, !exposureBusy, !liveViewBusy else { return }
         batteryBusy = true
         defer { if session === active { batteryBusy = false } }
         do {
@@ -449,7 +485,7 @@ final class CameraConnectionModel: ObservableObject {
     // MARK: - Nikon host registration
 
     func prepareRegistration() async {
-        guard let session, phase == .connected, !batteryBusy, !pairingBusy, !monitorBusy, !slotsBusy, !liveViewBusy else { return }
+        guard let session, phase == .connected, !batteryBusy, !pairingBusy, !monitorBusy, !slotsBusy, !exposureBusy, !liveViewBusy else { return }
         pairingBusy = true
         defer { if self.session === session { pairingBusy = false } }
         do {
@@ -472,7 +508,7 @@ final class CameraConnectionModel: ObservableObject {
     }
 
     func confirmRegistration() async {
-        guard let session, phase == .connected, !batteryBusy, !pairingBusy, !monitorBusy, !slotsBusy, !liveViewBusy else { return }
+        guard let session, phase == .connected, !batteryBusy, !pairingBusy, !monitorBusy, !slotsBusy, !exposureBusy, !liveViewBusy else { return }
         pairingBusy = true
         defer { if self.session === session { pairingBusy = false } }
         do {

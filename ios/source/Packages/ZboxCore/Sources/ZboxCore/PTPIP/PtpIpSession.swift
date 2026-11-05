@@ -193,6 +193,15 @@ public actor PtpIpSession {
         return value
     }
 
+    /// Read one known exposure value; non-OK responses remain unavailable, not defaults.
+    public func fetchExposure(_ property: ExposureProperty) async throws -> String? {
+        let result = try await execute(opCode: PtpOpCode.getDevicePropValue,
+                                       params: [UInt32(property.rawValue)],
+                                       expectData: true, timeoutSeconds: 6)
+        guard result.response.isOK else { return nil }
+        return property.displayValue(result.data)
+    }
+
     /// Explicitly enter live view. The caller must later request stop or close the session.
     /// Camera state is changed; never invoke as an automatic capability probe.
     public func startLiveView() async throws {

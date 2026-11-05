@@ -92,14 +92,27 @@ struct AppRootView: View {
                         Button(model.batteryBusy ? "读取中…" : "读取电池电量") {
                             Task { await model.refreshBattery() }
                         }
-                        .disabled(model.batteryBusy || model.pairingPrepared || model.pairingBusy || model.monitorBusy || model.slotsBusy || model.liveViewBusy)
+                        .disabled(model.batteryBusy || model.pairingPrepared || model.pairingBusy || model.monitorBusy || model.slotsBusy || model.liveViewBusy || model.exposureBusy)
+                    }
+
+                    Section("曝光信息（只读）") {
+                        Button(model.exposureBusy ? "读取中…" : "读取曝光信息") {
+                            Task { await model.refreshExposure() }
+                        }
+                        .disabled(model.exposureBusy || model.liveViewBusy || model.batteryBusy ||
+                                  model.slotsBusy || model.monitorBusy || model.pairingBusy || model.pairingPrepared)
+                        ForEach(model.exposureRows) { row in
+                            LabeledContent(row.title, value: row.value)
+                        }
+                        Text("取景时请先停止；仅显示机身返回值，白平衡和曝光程序暂以原始代码显示。")
+                            .font(.footnote).foregroundStyle(.secondary)
                     }
 
                     Section("自定义优化校准（只读）") {
                         Button(model.slotsBusy ? "读取中…" : "读取 C-1…C-9") {
                             Task { await model.refreshSlots() }
                         }
-                        .disabled(model.slotsBusy || model.batteryBusy || model.monitorBusy || model.pairingBusy || model.pairingPrepared || model.liveViewBusy)
+                        .disabled(model.slotsBusy || model.batteryBusy || model.monitorBusy || model.pairingBusy || model.pairingPrepared || model.liveViewBusy || model.exposureBusy)
                         ForEach(model.slots) { slot in
                             LabeledContent("C-\(slot.index)", value: slotDescription(slot))
                         }
@@ -114,11 +127,11 @@ struct AppRootView: View {
                         Button("准备注册（0x952B）") {
                             Task { await model.prepareRegistration() }
                         }
-                        .disabled(model.pairingPrepared || model.batteryBusy || model.pairingBusy || model.monitorBusy || model.slotsBusy || model.liveViewBusy)
+                        .disabled(model.pairingPrepared || model.batteryBusy || model.pairingBusy || model.monitorBusy || model.slotsBusy || model.liveViewBusy || model.exposureBusy)
                         Button("确认注册（0x935A，等待 8.5 秒）") {
                             Task { await model.confirmRegistration() }
                         }
-                        .disabled(!model.pairingPrepared || model.pairingBusy || model.batteryBusy || model.monitorBusy || model.slotsBusy || model.liveViewBusy)
+                        .disabled(!model.pairingPrepared || model.pairingBusy || model.batteryBusy || model.monitorBusy || model.slotsBusy || model.liveViewBusy || model.exposureBusy)
                     }
 
                     Section {
