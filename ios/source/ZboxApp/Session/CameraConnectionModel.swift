@@ -616,6 +616,16 @@ final class CameraConnectionModel: ObservableObject {
         }
     }
 
+    private func mayContinueAlbum(_ active: PtpIpSession) -> Bool {
+        session === active && phase == .connected && albumBusy && !albumCancelRequested
+    }
+
+    private func reportAlbumProgress(_ active: PtpIpSession, offset: UInt64, total: UInt64) {
+        guard mayContinueAlbum(active), total > 0 else { return }
+        albumProgress = Double(offset) / Double(total)
+        albumMessage = "下载中：\(offset) / \(total) 字节"
+    }
+
     func downloadSTAItem(_ item: NikonSTAAlbumItem) async {
         guard let active = session, phase == .connected, connectedSTA, !albumBusy,
               !liveViewBusy, !batteryBusy, !slotsBusy, !monitorBusy, !exposureBusy,
@@ -625,50 +635,24 @@ final class CameraConnectionModel: ObservableObject {
         albumProgress = 0
         albumDownloadURL = nil
         albumMessage = "正在读取文件大小…"
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ZBox-" + UUID().uuidString, isDirectory: true)
-        let partial = dir.appendingPathComponent("partial")
-        let completed = dir.appendingPathComponent(item.placeholderName)
-        var finished = false
-        defer {
-            if !finished { try? FileManager.default.removeItem(at: dir) }
-            if session === active { albumBusy = false; albumProgress = nil }
-        }
+        defer { if session === active { albumBusy = false; albumProgress = nil } }
         do {
             let size = try await active.fetchNikonSTAObjectSize(handle: item.handle)
             guard session === active, phase == .connected, !albumCancelRequested else { throw CancellationError() }
-            // Bound disk use. 0x9434 metadata size is deliberately not used here.
-            guard size > 0, size <= 32 * 1024 * 1024 * 1024 else {
-                albumMessage = "文件大小为零或超过 32 GiB 安全上限"; return
+            let completed = try await STAFileDownload.download(size: size, fileName: item.placeholderName,
+                shouldContinue: { [weak self, weak active] in
+                    guard let self, let active else { return false }
+                    return await self.mayContinueAlbum(active)
+                }, fetch: { offset, length in
+                    try await active.fetchNikonSTAPartial(handle: item.handle, offset: offset, length: length)
+                }, progress: { [weak self, weak active] offset, size in
+                    guard let self, let active else { return }
+                    await self.reportAlbumProgress(active, offset: offset, total: size)
+                })
+            guard session === active, phase == .connected, !albumCancelRequested else {
+                try? FileManager.default.removeItem(at: completed.deletingLastPathComponent())
+                return
             }
-            let values = try? FileManager.default.temporaryDirectory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-            if let free = values?.volumeAvailableCapacityForImportantUsage,
-               free >= 0, UInt64(free) < size + 8 * 1024 * 1024 {
-                albumMessage = "设备可用空间不足"; return
-            }
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            guard FileManager.default.createFile(atPath: partial.path, contents: nil) else {
-                throw CocoaError(.fileWriteUnknown)
-            }
-            let writer = try FileHandle(forWritingTo: partial)
-            defer { try? writer.close() }
-            var offset: UInt64 = 0
-            while offset < size {
-                guard session === active, phase == .connected, !albumCancelRequested else { throw CancellationError() }
-                let wanted = Int(min(UInt64(512 * 1024), size - offset))
-                let bytes = try await active.fetchNikonSTAPartial(handle: item.handle, offset: offset, length: wanted)
-                guard session === active, phase == .connected, !albumCancelRequested else { throw CancellationError() }
-                try writer.write(contentsOf: bytes)
-                offset += UInt64(bytes.count)
-                albumProgress = Double(offset) / Double(size)
-                albumMessage = "下载中：\(offset) / \(size) 字节"
-            }
-            try writer.close()
-            let actual = try FileManager.default.attributesOfItem(atPath: partial.path)[.size] as? NSNumber
-            guard actual?.uint64Value == size else {
-                throw PtpIpSessionError.malformed(stage: "STA 相册", detail: "保存文件长度不匹配")
-            }
-            try FileManager.default.moveItem(at: partial, to: completed)
-            finished = true
             albumDownloadURL = completed
             albumMessage = "下载完成；请使用分享保存。名称为占位名，临时文件可能被系统清理。"
             log.add("STA 相册原文件下载完成，长度已核对；未验证文件内容")
@@ -676,6 +660,10 @@ final class CameraConnectionModel: ObservableObject {
             if session === active { albumMessage = "下载已取消；不完整文件已删除" }
         } catch PtpIpSessionError.operationFailed(let code, let op) {
             if session === active { albumMessage = String(format: "相机拒绝下载：0x%04X 返回 0x%04X", op, code) }
+        } catch STAFileDownloadError.invalidSize {
+            if session === active { albumMessage = "文件大小为零或超过 32 GiB 安全上限" }
+        } catch STAFileDownloadError.insufficientSpace {
+            if session === active { albumMessage = "设备可用空间不足" }
         } catch {
             guard session === active, phase == .connected else { return }
             albumMessage = "下载异常，不完整文件已删除：\(describe(error))"
