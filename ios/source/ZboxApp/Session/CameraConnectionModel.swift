@@ -577,7 +577,7 @@ final class CameraConnectionModel: ObservableObject {
         }
     }
 
-    /// Read at most the first 256 KiB; embedded previews outside the prefix are not fetched.
+    /// Read a bounded prefix and, when TIFF explicitly identifies it, one bounded JPEG range.
     func previewSTAItem(_ item: NikonSTAAlbumItem) async {
         guard let active = session, phase == .connected, connectedSTA, !albumBusy,
               !liveViewBusy, !batteryBusy, !slotsBusy, !monitorBusy, !exposureBusy,
@@ -600,8 +600,23 @@ final class CameraConnectionModel: ObservableObject {
                 guard session === active, phase == .connected, !albumCancelRequested else { throw CancellationError() }
                 prefix.append(chunk)
             }
-            guard let jpeg = EmbeddedJPEG.largestComplete(in: prefix) else {
-                albumMessage = "前 256 KiB 未发现完整内嵌 JPEG；可选择下载原文件"; return
+            var jpeg = EmbeddedJPEG.largestComplete(in: prefix)
+            if jpeg == nil, let range = TIFFPreviewRange.largest(in: prefix, fileSize: size) {
+                var candidate = Data()
+                let expected = Int(range.upperBound - range.lowerBound)
+                while candidate.count < expected {
+                    guard session === active, phase == .connected, !albumCancelRequested else { throw CancellationError() }
+                    let offset = range.lowerBound + UInt64(candidate.count)
+                    let chunk = try await active.fetchNikonSTAPartial(handle: item.handle, offset: offset, length: expected - candidate.count)
+                    guard session === active, phase == .connected, !albumCancelRequested else { throw CancellationError() }
+                    candidate.append(chunk)
+                }
+                if candidate.count >= 5, candidate.starts(with: [0xff, 0xd8]), candidate.suffix(2) == Data([0xff, 0xd9]) {
+                    jpeg = candidate
+                }
+            }
+            guard let jpeg else {
+                albumMessage = "未找到完整内嵌 JPEG；可选择下载原文件"; return
             }
             albumPreviewJPEG = jpeg
             albumMessage = "已读取内嵌 JPEG 标记；若图片不可解码，请下载原文件查看"
