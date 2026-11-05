@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import UIKit
 import ZboxCore
 
 /// 连接流程的界面状态。所有 PTP 调用都经过 `ZboxCore.PtpIpSession`。
@@ -68,7 +69,25 @@ final class CameraConnectionModel: ObservableObject {
         return Array(items.dropFirst(albumThumbnailPage).prefix(ThumbnailBatch.pageSize))
     }
     private var albumCancelRequested = false
+    private static let movieRiskKey = "camera.movie.mayBeActive.guid"
+    @Published private(set) var movieRiskID = UserDefaults.standard.string(forKey: "camera.movie.mayBeActive.guid") ?? ""
+    @Published private(set) var moviePhase: MoviePhase = .idle
+    @Published private(set) var movieBusy = false
+    @Published private(set) var movieSupported = false
+    @Published private(set) var movieMessage = UserDefaults.standard.string(forKey: "camera.movie.mayBeActive.guid") == nil
+        ? "录像尚未开始；需在机身手动切换录像模式" : "上次录像状态未知；请检查原机身。"
+    private var cameraGUID = ""
+    var movieMayBeActive: Bool { !movieRiskID.isEmpty }
+    var canStartMovie: Bool {
+        !movieMayBeActive && !movieBusy && movieSupported && !cameraGUID.isEmpty &&
+        operationPolicy.permits(.movie) && !liveViewStopRequested
+    }
+    var canStopMovie: Bool {
+        movieMayBeActive && !movieBusy && appActive && phase == .connected && session != nil &&
+        movieSupported && cameraGUID == movieRiskID
+    }
     @Published private(set) var focusSupported = false
+    @Published private(set) var touchFocusSupported = false
     @Published private(set) var focusBusy = false
     @Published private(set) var focusMessage = "AF 尚未触发"
     var canAutofocus: Bool { focusSupported && operationPolicy.permits(.focus) && !liveViewStopRequested }
@@ -83,6 +102,13 @@ final class CameraConnectionModel: ObservableObject {
     @Published private(set) var liveViewPhase: LiveViewPhase = .idle
     @Published private(set) var liveViewJPEG: Data?
     @Published private(set) var liveViewFrames = 0
+    @Published private(set) var previewOverlay: Data?
+    @Published private(set) var previewHistogram: [Int] = []
+    @Published private(set) var previewHighlights = 0
+    @Published private(set) var previewPixels = 0
+    private var analysisBusy = false
+    private var analysisEpoch = UUID()
+    private var lastAnalysis = Date.distantPast
     @Published private(set) var liveViewMessage = "请手动开启取景"
     var liveViewBusy: Bool { liveViewPhase != .idle }
     var canStartLiveView: Bool {
@@ -98,6 +124,7 @@ final class CameraConnectionModel: ObservableObject {
         if albumBusy { busy.insert(.album) }
         if captureBusy { busy.insert(.capture) }
         if focusBusy { busy.insert(.focus) }
+        if movieBusy || movieMayBeActive { busy.insert(.movie) }
         if pairingBusy { busy.insert(.registration) }
         let view: CameraOperationPolicy.LiveView
         switch liveViewPhase {
@@ -117,26 +144,39 @@ final class CameraConnectionModel: ObservableObject {
     private var monitorTask: Task<Void, Never>?
     private var liveViewTask: Task<Void, Never>?
     private var liveViewStopRequested = false
+    private var discoveryID = UUID()
+    private var connectionID = UUID()
+    private var connectingInFlight = false
 
     /// Centralized lifecycle entry point; avoid cancelling an on-wire PTP transaction.
     func appBecameInactive() {
         appActive = false
+        discoveryID = UUID()
+        connectionID = UUID()
+        if phase == .scanning { phase = .idle; statusMessage = "扫描已取消（应用不活跃）" }
+        if phase == .connecting { statusMessage = "连接已取消，等待握手安全结束…" }
         cancelAlbumWork()
         cancelAlbumVerification()
         cancelPendingCapture()
         cancelPendingExposureWrite()
         requestStopLiveView()
+        if movieMayBeActive {
+            movieMessage = "录像可能仍在机身进行；应用进入后台不会自动停止，请检查机身。"
+        }
     }
 
     func appBecameActive() { appActive = true }
 
     #if DEBUG
     /// App-hosted tests inject a fully connected fake transport; excluded from Release.
-    func installSessionForTesting(_ active: PtpIpSession, sta: Bool = true, supportsAutofocus: Bool = false) {
+    func installSessionForTesting(_ active: PtpIpSession, sta: Bool = true, supportsAutofocus: Bool = false,
+                                  supportsMovie: Bool = false, cameraID: String = "") {
         precondition(phase == .idle && session == nil)
         session = active
         connectedSTA = sta
         focusSupported = supportsAutofocus
+        movieSupported = supportsMovie
+        cameraGUID = cameraID
         phase = .connected
     }
     #endif
@@ -184,9 +224,11 @@ final class CameraConnectionModel: ObservableObject {
     func scan() async {
         guard appActive, phase == .idle else { return }
         phase = .scanning
+        let attempt = UUID(); discoveryID = attempt
         candidates = []
         log.add("开始热点相机扫描（bridge/en 私有子网，TCP 15740）")
         let found = await HotspotCameraScanner.scan()
+        guard discoveryID == attempt, appActive, phase == .scanning else { return }
         let decision = HotspotConnectionPolicy.decide(found: found)
         switch decision.action {
         case .none:
@@ -208,9 +250,11 @@ final class CameraConnectionModel: ObservableObject {
     func scanBonjour() async {
         guard appActive, phase == .idle else { return }
         phase = .scanning
+        let attempt = UUID(); discoveryID = attempt
         bonjourCandidates = []
         log.add("开始 Bonjour 服务发现")
         let result = await BonjourCameraScanner.scan()
+        guard discoveryID == attempt, appActive, phase == .scanning else { return }
         bonjourCandidates = result.candidates
         phase = .idle
         if result.candidates.isEmpty {
@@ -248,6 +292,7 @@ final class CameraConnectionModel: ObservableObject {
         // Block new work, let an in-flight live-view transaction finish, then stop it.
         // iOS may suspend the app before cleanup finishes; camera state is not guaranteed.
         guard phase != .disconnecting else { return }
+        connectionID = UUID(); discoveryID = UUID()
         let wasCapturing = captureBusy
         let wasWritingExposure = exposureWriteInProgress
         exposureWriteCancelled = true
@@ -278,6 +323,11 @@ final class CameraConnectionModel: ObservableObject {
         captureBusy = false
         focusBusy = false
         focusSupported = false
+        touchFocusSupported = false
+        movieSupported = false
+        cameraGUID = ""
+        movieBusy = false
+        if movieMayBeActive { moviePhase = .awaitingCameraCheck; movieMessage = "连接已断开，录像状态未知；请检查机身。" }
         liveViewStopRequested = true
         liveViewPhase = .idle
         liveViewJPEG = nil
@@ -304,11 +354,17 @@ final class CameraConnectionModel: ObservableObject {
     }
 
     private func openSession(endpoint: NWEndpoint, localAddress: String?, staMode: Bool, displayName: String) async {
-        guard phase == .idle else { return }
+        guard appActive, phase == .idle, !connectingInFlight else { return }
+        let attempt = UUID(); connectionID = attempt; connectingInFlight = true
         phase = .connecting
+        defer {
+            connectingInFlight = false
+            if phase == .connecting && connectionID != attempt { phase = .idle }
+        }
         let oldSession = session
         session = nil
         await oldSession?.close()
+        guard appActive, phase == .connecting, connectionID == attempt else { return }
         batteryLevel = nil
         batteryBusy = false
         needsRecovery = false
@@ -316,6 +372,7 @@ final class CameraConnectionModel: ObservableObject {
         pairingPrepared = false
         pairingBusy = false
         log.add("连接 \(displayName)（\(staMode ? "相机加入网络" : "手机连相机热点")）")
+        var opening: PtpIpSession?
         do {
             let guid = try ClientIdentityStore.loadOrCreateGuid()
             let connected = try await PtpIpConnector.connect { name in
@@ -331,18 +388,33 @@ final class CameraConnectionModel: ObservableObject {
                     config: PtpIpSessionConfig(initiatorGuid: guid, initiatorName: name, staMode: staMode)
                 )
             }
+            opening = connected.session
+            guard appActive, phase == .connecting, connectionID == attempt else { await connected.session.close(); return }
             clientName = connected.usedName
             if connected.usedName != PtpIpConnector.defaultPrimaryName {
                 log.add("相机接受兼容客户端名称（名称已生效，未记录具体值）")
             }
             session = connected.session
+            let cameraBytes = connected.info.cameraGuid
+            cameraGUID = cameraBytes.count == 16 && cameraBytes.contains(where: { $0 != 0 })
+                ? cameraBytes.map { String(format: "%02x", $0) }.joined() : ""
             log.add("握手完成：连接号=\(connected.info.connectionNumber)，会话已打开")
 
             let device = try await connected.session.fetchDeviceInfo()
+            guard appActive, phase == .connecting, connectionID == attempt, session === connected.session else {
+                if session === connected.session { session = nil }
+                await connected.session.close(); return
+            }
             guard device.isNikon else {
                 throw PtpIpSessionError.malformed(stage: "DeviceInfo", detail: "目标不是 Nikon 设备，已停止")
             }
             focusSupported = device.operations.contains(PtpOpCode.nikonAutofocus)
+            touchFocusSupported = focusSupported && device.operations.contains(PtpOpCode.nikonChangeAfArea) && device.operations.contains(PtpOpCode.getDevicePropDesc)
+            movieSupported = device.operations.contains(PtpOpCode.nikonStartMovie) && device.operations.contains(PtpOpCode.nikonStopMovie)
+            if movieMayBeActive {
+                moviePhase = .awaitingCameraCheck
+                movieMessage = cameraGUID == movieRiskID ? "上次录像状态未知；请检查机身，可手动请求停止。" : "另一台相机的录像状态未知；请检查原机身。"
+            }
             deviceRows = [
                 DeviceRow(title: "厂商", value: device.manufacturer),
                 DeviceRow(title: "型号", value: NikonConnectionPolicy.normalizedModel(device.model)),
@@ -356,11 +428,16 @@ final class CameraConnectionModel: ObservableObject {
             statusMessage = "已连接 \(NikonConnectionPolicy.normalizedModel(device.model))"
             startMonitor(for: connected.session)
         } catch PtpIpSessionError.initFailed(let reason) where reason == PtpIpInitFailReason.rejected.rawValue {
+            guard appActive, phase == .connecting, connectionID == attempt else { await opening?.close(); return }
             needsRecovery = true
             phase = .idle
             statusMessage = "相机拒绝了当前客户端身份（InitFail reason=1）"
             log.add("InitFail reason=1：相机拒绝客户端身份，已尝试兼容名称")
         } catch {
+            guard appActive, phase == .connecting, connectionID == attempt else {
+                if let opening, session === opening { session = nil }
+                await opening?.close(); return
+            }
             phase = .idle
             statusMessage = "连接失败：\(describe(error))"
             log.add("连接失败：\(describe(error))")
@@ -430,6 +507,7 @@ final class CameraConnectionModel: ObservableObject {
                     if liveViewStopRequested { break }
                     liveViewJPEG = bytes
                     liveViewFrames += 1
+                    analyzePreviewIfNeeded(bytes, active: active)
                     misses = 0
                 } catch PtpIpSessionError.timeout(let stage) {
                     liveViewMessage = "取景超时（\(stage)），连接已关闭"
@@ -462,7 +540,10 @@ final class CameraConnectionModel: ObservableObject {
             fatal = true
         }
         guard session === active else { return }
-        if started && !fatal {
+        if started && !fatal && movieMayBeActive {
+            // EndLiveView may affect an ongoing movie. Stop polling only, preserve uncertainty.
+            liveViewMessage = "已停止手机取帧；机身录像/取景可能仍在运行，请检查机身。"
+        } else if started && !fatal {
             liveViewPhase = .stopping
             do {
                 try await active.stopLiveView()
@@ -476,6 +557,8 @@ final class CameraConnectionModel: ObservableObject {
         guard session === active else { return }
         let finalMessage = liveViewMessage
         liveViewJPEG = nil
+        analysisEpoch = UUID()
+        previewOverlay = nil; previewHistogram = []; previewPixels = 0
         liveViewPhase = .idle
         liveViewTask = nil
         liveViewStopRequested = false
@@ -502,6 +585,11 @@ final class CameraConnectionModel: ObservableObject {
             captureBusy = false
             focusBusy = false
             focusSupported = false
+            touchFocusSupported = false
+            movieSupported = false
+            cameraGUID = ""
+            movieBusy = false
+            if movieMayBeActive { moviePhase = .awaitingCameraCheck; movieMessage = "连接中断，录像状态未知；请检查机身。" }
             pairingBusy = false
             pairingPrepared = false
             pairingPIN = nil
@@ -511,6 +599,29 @@ final class CameraConnectionModel: ObservableObject {
             statusMessage = finalMessage
             log.add(finalMessage)
             await active.close()
+        }
+    }
+
+    private func analyzePreviewIfNeeded(_ jpeg: Data, active: PtpIpSession) {
+        let defaults = UserDefaults.standard
+        let zebra = defaults.bool(forKey: "viewfinder.zebra")
+        let peaking = defaults.bool(forKey: "viewfinder.peaking")
+        let histogram = defaults.bool(forKey: "viewfinder.histogram")
+        guard zebra || peaking || histogram, !analysisBusy, Date().timeIntervalSince(lastAnalysis) >= 0.4 else { return }
+        analysisBusy = true; lastAnalysis = Date()
+        let epoch = analysisEpoch
+        Task { [weak self, weak active] in
+            let result = await Task.detached(priority: .utility) {
+                PreviewAnalyzer.analyze(jpeg: jpeg, zebra: zebra, peaking: peaking)
+            }.value
+            guard let self else { return }
+            self.analysisBusy = false
+            guard let active, self.session === active, self.analysisEpoch == epoch, self.liveViewPhase == .streaming,
+                  let result else { return }
+            self.previewOverlay = result.overlay
+            self.previewHistogram = result.histogram
+            self.previewHighlights = result.highlights
+            self.previewPixels = result.pixels
         }
     }
 
@@ -592,6 +703,139 @@ final class CameraConnectionModel: ObservableObject {
         } catch {
             guard session === active, phase == .connected else { return }
             focusMessage = "AF 结果未知，请检查机身；连接已关闭。"
+            await disconnect(reason: focusMessage)
+        }
+    }
+
+    // MARK: - Movie safety: manual camera mode, explicit start/stop, durable uncertainty
+
+    private func movieGate(_ active: PtpIpSession, starting: Bool) -> Bool {
+        guard session === active, phase == .connected, appActive, movieBusy else { return false }
+        if starting { return !movieMayBeActive && liveViewPhase == .streaming && !liveViewStopRequested }
+        return movieMayBeActive && cameraGUID == movieRiskID
+    }
+    private func commitMovieStart(_ active: PtpIpSession) -> Bool {
+        guard movieGate(active, starting: true), !cameraGUID.isEmpty else { return false }
+        // Persist before transmission: even a crash between here and the packet is conservatively uncertain.
+        UserDefaults.standard.set(cameraGUID, forKey: Self.movieRiskKey)
+        guard UserDefaults.standard.synchronize() else {
+            UserDefaults.standard.removeObject(forKey: Self.movieRiskKey)
+            return false
+        }
+        movieRiskID = cameraGUID
+        moviePhase = .startMayHaveBeenSent
+        movieMessage = "开始命令可能已发送；请检查机身录像状态。"
+        return true
+    }
+    private func commitMovieStop(_ active: PtpIpSession) -> Bool {
+        guard movieGate(active, starting: false) else { return false }
+        moviePhase = .stopMayHaveBeenSent
+        movieMessage = "停止命令可能已发送；请检查机身。"
+        return true
+    }
+    func startMovie() async {
+        guard let active = session, canStartMovie else { return }
+        movieBusy = true; moviePhase = .preparing
+        movieMessage = "正在检查机身录像模式、禁止原因和就绪状态…"
+        defer { if session === active { movieBusy = false } }
+        do {
+            try await active.startMovieOnce(shouldContinue: { [weak self, weak active] in
+                guard let self, let active else { return false }
+                return await self.movieGate(active, starting: true)
+            }, willSend: { [weak self, weak active] in
+                guard let self, let active else { return false }
+                return await self.commitMovieStart(active)
+            })
+            if session === active { movieMessage = "机身已接受开始命令；请确认机身正在录像。" }
+        } catch MovieSafetyError.cancelled {
+            if session === active && !movieMayBeActive { moviePhase = .idle; movieMessage = "已取消，未发送录像开始命令。" }
+        } catch MovieSafetyError.cameraModeUnknownOrNotMovie {
+            if session === active { moviePhase = .idle; movieMessage = "请在机身手动切换录像模式；模式无法读回时不会开始。" }
+        } catch MovieSafetyError.prohibitedOrUnknown {
+            if session === active { moviePhase = .idle; movieMessage = "机身禁止录像或禁止原因不可读取；未发送开始命令。" }
+        } catch MovieSafetyError.cameraNotReady {
+            if session === active { moviePhase = .idle; movieMessage = "机身未就绪；未发送开始命令。" }
+        } catch MovieSafetyError.unsupported {
+            if session === active { moviePhase = .idle; movieMessage = "机身未声明必要录像命令；未发送开始命令。" }
+        } catch PtpIpSessionError.operationFailed(let code, let op) {
+            if session === active {
+                moviePhase = movieMayBeActive ? .awaitingCameraCheck : .idle
+                movieMessage = String(format: "机身拒绝命令 0x%04X：0x%04X；请检查机身，没有自动重试。", op, code)
+            }
+        } catch {
+            guard session === active, phase == .connected else { return }
+            movieMessage = movieMayBeActive ? "录像结果未知，请检查机身；没有自动重试。" : "准备录像时连接中断；未发送录像开始命令。"
+            await disconnect(reason: movieMessage)
+        }
+    }
+    func stopMovie() async {
+        guard let active = session, canStopMovie else { return }
+        movieBusy = true
+        defer { if session === active { movieBusy = false } }
+        do {
+            try await active.stopMovieOnce(shouldContinue: { [weak self, weak active] in
+                guard let self, let active else { return false }
+                return await self.movieGate(active, starting: false)
+            }, willSend: { [weak self, weak active] in
+                guard let self, let active else { return false }
+                return await self.commitMovieStop(active)
+            })
+            if session === active { moviePhase = .awaitingCameraCheck; movieMessage = "机身接受停止命令；请在机身确认已停止及文件状态。" }
+        } catch MovieSafetyError.cancelled {
+            if session === active { moviePhase = .awaitingCameraCheck; movieMessage = "未发送停止命令；请检查机身。" }
+        } catch PtpIpSessionError.operationFailed(let code, _) {
+            if session === active { moviePhase = .awaitingCameraCheck; movieMessage = String(format: "停止命令未获接受（0x%04X）；请检查机身。", code) }
+        } catch {
+            guard session === active, phase == .connected else { return }
+            movieMessage = "停止结果未知；请检查机身，没有自动重试。"
+            await disconnect(reason: movieMessage)
+        }
+    }
+    private func clearMovieRisk() -> Bool {
+        let old = movieRiskID
+        UserDefaults.standard.removeObject(forKey: Self.movieRiskKey)
+        guard UserDefaults.standard.synchronize() else {
+            UserDefaults.standard.set(old, forKey: Self.movieRiskKey)
+            return false
+        }
+        movieRiskID = ""
+        return true
+    }
+    /// Only a user who checked the original camera can dismiss the durable interlock.
+    func acknowledgeMovieStopped() {
+        guard movieMayBeActive, !movieBusy else { return }
+        guard clearMovieRisk() else { movieMessage = "无法保存确认状态，保留录像风险提示。"; return }
+        moviePhase = .idle
+        movieMessage = "已由用户确认机身停止；视频文件仍需在机身检查。"
+    }
+
+    var canTouchFocus: Bool { touchFocusSupported && canAutofocus && liveViewJPEG != nil }
+    func touchFocus(x: Double, y: Double, imageWidth: Int, imageHeight: Int) async {
+        guard let active = session, canTouchFocus else { return }
+        focusBusy = true; focusMessage = "正在检查并移动 AF 区域…"
+        defer { if session === active { focusBusy = false } }
+        do {
+            try await active.touchFocusOnce(x: x, y: y, imageWidth: imageWidth, imageHeight: imageHeight,
+                shouldContinue: { [weak self, weak active] in
+                    guard let self, let active else { return false }
+                    return await self.mayCommitAutofocus(active)
+                })
+            if session === active { focusMessage = "对焦区域已确认，AF 已触发；不代表已确认合焦。" }
+        } catch TouchFocusError.invalidMode {
+            if session === active { focusMessage = "请在机身选择单点 AF 区域模式；未自动修改设置。" }
+        } catch TouchFocusError.invalidGeometry {
+            if session === active { focusMessage = "取景坐标或放大状态无法验证；未触发 AF。" }
+        } catch TouchFocusError.positionNotVerified {
+            if session === active { focusMessage = "机身未确认对焦区域到位；未触发 AF，请检查机身。" }
+        } catch TouchFocusError.cancelled {
+            if session === active { focusMessage = "触点操作已取消；对焦区域可能已移动，请检查机身。" }
+        } catch TouchFocusError.notAdvertised {
+            if session === active { focusMessage = "机身未声明触点对焦能力。" }
+        } catch PtpIpSessionError.operationFailed(let code, let op) {
+            if session === active { focusMessage = String(format: "机身拒绝 0x%04X：0x%04X；未自动重试。", op, code) }
+        } catch {
+            guard session === active, phase == .connected else { return }
+            focusMessage = "触点操作结果未知；请检查机身。"
             await disconnect(reason: focusMessage)
         }
     }

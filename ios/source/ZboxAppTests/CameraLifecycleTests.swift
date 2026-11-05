@@ -21,7 +21,7 @@ private func ptpString(_ text: String) -> Data {
 }
 private func advertisedDeviceInfo() -> Data {
     var d = little(UInt16(100)) + little(UInt32(10)) + little(UInt16(100)) + Data([0]) + little(UInt16(0))
-    let ops: [UInt16] = [0x1001, 0x1002, 0x90c1]
+    let ops: [UInt16] = [0x1001, 0x1002, 0x1015, 0x90c1, 0x90c8, 0x920a, 0x920b]
     d += little(UInt32(ops.count))
     for op in ops { d += little(op) }
     for _ in 0..<4 { d += little(UInt32(0)) }
@@ -89,7 +89,12 @@ private actor FakeAppCommand: PtpIpByteChannel {
                 descriptor += little(UInt16(400)) + little(UInt16(800))
                 inbox.append(contentsOf: input(tx, descriptor))
             } else if op == 0x1015 {
-                inbox.append(contentsOf: input(tx, little(UInt16(400))))
+                let property = u32(data, 18)
+                let value: Data
+                if property == 0xd1f0 || property == 0xd1a6 { value = Data([1]) }
+                else if property == 0xd0a4 { value = little(UInt32(0)) }
+                else { value = little(UInt16(400)) }
+                inbox.append(contentsOf: input(tx, value))
             } else {
                 inbox.append(response(tx))
             }
@@ -111,14 +116,14 @@ private actor FakeAppEvent: PtpIpByteChannel {
 
 @MainActor
 final class CameraLifecycleTests: XCTestCase {
-    private func makeModel(pausedOp: UInt16, pauseOccurrence: Int = 1) async throws -> (CameraConnectionModel, FakeAppCommand, PausePoint) {
+    private func makeModel(pausedOp: UInt16, pauseOccurrence: Int = 1, supportsMovie: Bool = false) async throws -> (CameraConnectionModel, FakeAppCommand, PausePoint) {
         let pause = PausePoint(), command = FakeAppCommand(pausedOp: pausedOp, pause: pause, pauseOccurrence: pauseOccurrence)
         let config = PtpIpSessionConfig(initiatorGuid: Data(repeating: 1, count: 16), initiatorName: "Test", staMode: true)
         let session = PtpIpSession(commandChannel: command, openEventChannel: { FakeAppEvent() }, config: config, settle: { _ in })
         _ = try await session.connect()
         _ = try await session.fetchDeviceInfo()
         let model = CameraConnectionModel()
-        model.installSessionForTesting(session, supportsAutofocus: true)
+        model.installSessionForTesting(session, supportsAutofocus: true, supportsMovie: supportsMovie, cameraID: supportsMovie ? "test-camera-guid" : "")
         return (model, command, pause)
     }
     private func awaitIdle(_ model: CameraConnectionModel) async throws {
@@ -259,6 +264,37 @@ final class CameraLifecycleTests: XCTestCase {
         let ops = await command.operations()
         XCTAssertFalse(ops.contains(0x90c1))
         XCTAssertTrue(ops.contains(0x9202))
+        await model.disconnect()
+    }
+    func testBackgroundDuringMovieStartKeepsDurableRiskAndNeverAutoStops() async throws {
+        UserDefaults.standard.removeObject(forKey: "camera.movie.mayBeActive.guid")
+        defer { UserDefaults.standard.removeObject(forKey: "camera.movie.mayBeActive.guid") }
+        let (model, command, pause) = try await makeModel(pausedOp: 0x920a, supportsMovie: true)
+        model.startLiveView()
+        for _ in 0..<200 {
+            if model.liveViewPhase == .streaming { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(model.canStartMovie)
+        let start = Task { await model.startMovie() }
+        await pause.untilEntered()
+        XCTAssertTrue(model.movieMayBeActive)
+        XCTAssertEqual(UserDefaults.standard.string(forKey: "camera.movie.mayBeActive.guid"), "test-camera-guid")
+        model.appBecameInactive()
+        await pause.release()
+        await start.value
+        try await awaitIdle(model)
+        let before = await command.operations()
+        XCTAssertFalse(before.contains(0x920b)); XCTAssertFalse(before.contains(0x9202))
+        XCTAssertTrue(model.movieMayBeActive)
+        model.appBecameActive()
+        XCTAssertTrue(model.canStopMovie)
+        await model.stopMovie()
+        XCTAssertTrue(model.movieMayBeActive) // acknowledgement alone is not proof of camera state
+        let after = await command.operations()
+        XCTAssertEqual(after.filter { $0 == 0x920b }.count, 1)
+        model.acknowledgeMovieStopped()
+        XCTAssertFalse(model.movieMayBeActive)
         await model.disconnect()
     }
 }

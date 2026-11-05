@@ -241,6 +241,94 @@ public actor PtpIpSession {
                                             timeout: 8, maxDataBytes: 0, generation: generation)
     }
 
+    private func checkedLocked(_ op: UInt16, params: [UInt32] = [], data: Bool = false,
+                               limit: Int = 0, timeout: Double = 6, generation: UInt64) async throws -> PtpOperationResult {
+        let result = try await executeWhileLocked(opCode: op, params: params, expectData: data,
+                                                   timeout: timeout, maxDataBytes: limit, generation: generation)
+        guard result.response.isOK else { throw PtpIpSessionError.operationFailed(code: result.response.code, opCode: op) }
+        return result
+    }
+
+    /// A single explicit start: no automatic mode changes, no writes to D1F0/D1A6, no retry.
+    /// The commit callback must durably record uncertainty before allowing the packet to be sent.
+    public func startMovieOnce(shouldContinue: @escaping @Sendable () async -> Bool,
+                               willSend: @escaping @Sendable () async -> Bool) async throws {
+        guard connectionInfo != nil else { throw PtpIpSessionError.notConnected }
+        let generation = sessionGeneration
+        try await lock.withLock { [self] in
+            try await self.startMovieLocked(generation: generation, shouldContinue: shouldContinue, willSend: willSend)
+        }
+    }
+    private func startMovieLocked(generation: UInt64, shouldContinue: @Sendable () async -> Bool,
+                                  willSend: @Sendable () async -> Bool) async throws {
+        guard let operations = deviceInfo?.operations, operations.contains(PtpOpCode.nikonStartMovie),
+              operations.contains(PtpOpCode.nikonStopMovie), operations.contains(PtpOpCode.nikonDeviceReady),
+              operations.contains(PtpOpCode.getDevicePropValue) else { throw MovieSafetyError.unsupported }
+        guard await shouldContinue() else { throw MovieSafetyError.cancelled }
+        let app = try await checkedLocked(PtpOpCode.getDevicePropValue, params: [0xd1f0], data: true, limit: 16, generation: generation)
+        guard await shouldContinue() else { throw MovieSafetyError.cancelled }
+        let selector = try await checkedLocked(PtpOpCode.getDevicePropValue, params: [0xd1a6], data: true, limit: 16, generation: generation)
+        guard await shouldContinue() else { throw MovieSafetyError.cancelled }
+        let prohibited = try await checkedLocked(PtpOpCode.getDevicePropValue, params: [0xd0a4], data: true, limit: 16, generation: generation)
+        try MoviePrerequisites.validate(application: app.data, selector: selector.data, prohibit: prohibited.data)
+        guard await shouldContinue() else { throw MovieSafetyError.cancelled }
+        let ready = try await executeWhileLocked(opCode: PtpOpCode.nikonDeviceReady, params: [], expectData: false,
+                                                 timeout: 6, maxDataBytes: 0, generation: generation)
+        guard ready.response.isOK else { throw MovieSafetyError.cameraNotReady }
+        guard await shouldContinue(), await willSend() else { throw MovieSafetyError.cancelled }
+        _ = try await checkedLocked(PtpOpCode.nikonStartMovie, timeout: 10, generation: generation)
+    }
+
+    /// No automatic stop; a user explicitly requests one. Never retries a stop packet.
+    public func stopMovieOnce(shouldContinue: @escaping @Sendable () async -> Bool,
+                              willSend: @escaping @Sendable () async -> Bool) async throws {
+        guard connectionInfo != nil else { throw PtpIpSessionError.notConnected }
+        let generation = sessionGeneration
+        try await lock.withLock { [self] in
+            guard await self.deviceInfo?.operations.contains(PtpOpCode.nikonStopMovie) == true else { throw MovieSafetyError.unsupported }
+            guard await shouldContinue(), await willSend() else { throw MovieSafetyError.cancelled }
+            _ = try await self.checkedLocked(PtpOpCode.nikonStopMovie, timeout: 10, generation: generation)
+        }
+    }
+
+    /// Relocate the AF area then verify it in a fresh frame before one AF drive. No setting changes.
+    public func touchFocusOnce(x: Double, y: Double, imageWidth: Int, imageHeight: Int,
+                               shouldContinue: @escaping @Sendable () async -> Bool) async throws {
+        guard connectionInfo != nil else { throw PtpIpSessionError.notConnected }
+        let generation = sessionGeneration
+        try await lock.withLock { [self] in
+            try await self.touchFocusLocked(x: x, y: y, imageWidth: imageWidth, imageHeight: imageHeight,
+                                            generation: generation, shouldContinue: shouldContinue)
+        }
+    }
+    private func touchFocusLocked(x: Double, y: Double, imageWidth: Int, imageHeight: Int, generation: UInt64,
+                                  shouldContinue: @Sendable () async -> Bool) async throws {
+        guard let ops = deviceInfo?.operations, ops.contains(PtpOpCode.nikonChangeAfArea),
+              ops.contains(PtpOpCode.nikonAutofocus), ops.contains(PtpOpCode.getDevicePropDesc) else { throw TouchFocusError.notAdvertised }
+        guard await shouldContinue() else { throw TouchFocusError.cancelled }
+        let desc = try await checkedLocked(PtpOpCode.getDevicePropDesc, params: [0xd05d], data: true, limit: 4096, generation: generation)
+        guard TouchFocus.singleAreaMode(desc.data) else { throw TouchFocusError.invalidMode }
+        guard await shouldContinue() else { throw TouchFocusError.cancelled }
+        let frame = try await checkedLocked(PtpOpCode.nikonGetLiveViewImage, data: true, limit: 32 * 1024 * 1024, timeout: 12, generation: generation)
+        _ = try LiveViewFrame.jpeg(from: frame.data)
+        guard let geometry = TouchFocus.geometry(header: LiveViewFrame.header(from: frame.data), imageWidth: imageWidth, imageHeight: imageHeight),
+              let point = TouchFocus.target(geometry, x: x, y: y) else { throw TouchFocusError.invalidGeometry }
+        guard await shouldContinue() else { throw TouchFocusError.cancelled }
+        _ = try await checkedLocked(PtpOpCode.nikonChangeAfArea, params: [UInt32(point.0), UInt32(point.1)], generation: generation)
+        var verified = false
+        for _ in 0..<3 {
+            guard await shouldContinue() else { throw TouchFocusError.cancelled }
+            let next = try await checkedLocked(PtpOpCode.nikonGetLiveViewImage, data: true, limit: 32 * 1024 * 1024, timeout: 12, generation: generation)
+            _ = try LiveViewFrame.jpeg(from: next.data)
+            guard let g = TouchFocus.geometry(header: LiveViewFrame.header(from: next.data), imageWidth: imageWidth, imageHeight: imageHeight),
+                  g.width == geometry.width, g.height == geometry.height else { throw TouchFocusError.invalidGeometry }
+            if abs(g.afX - point.0) <= g.afWidth / 2 && abs(g.afY - point.1) <= g.afHeight / 2 { verified = true; break }
+        }
+        guard verified else { throw TouchFocusError.positionNotVerified }
+        guard await shouldContinue() else { throw TouchFocusError.cancelled }
+        _ = try await checkedLocked(PtpOpCode.nikonAutofocus, timeout: 8, generation: generation)
+    }
+
     /// One read-only DeviceReady attempt. Only DeviceBusy is retryable.
     public func nikonDeviceReady() async throws -> Bool {
         let result = try await execute(opCode: PtpOpCode.nikonDeviceReady, timeoutSeconds: 6, maxDataBytes: 0)

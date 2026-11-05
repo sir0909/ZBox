@@ -6,6 +6,15 @@ public enum LiveViewFrame {
 
     /// Nikon payloads can contain a device-specific prefix and trailing data. Return the
     /// first SOI through the last EOI, as in the Android driver; reject incomplete data.
+    public static func header(from payload: Data) -> Data {
+        let bytes = [UInt8](payload)
+        guard bytes.count >= 2 else { return Data() }
+        for i in 0..<(bytes.count - 1) where bytes[i] == 0xff && bytes[i + 1] == 0xd8 {
+            return Data(bytes.prefix(min(i, 128)))
+        }
+        return Data()
+    }
+
     public static func jpeg(from payload: Data) throws -> Data {
         let bytes = [UInt8](payload)
         guard bytes.count >= 4 else {

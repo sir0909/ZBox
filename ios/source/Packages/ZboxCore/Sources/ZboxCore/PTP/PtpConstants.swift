@@ -30,6 +30,9 @@ public enum PtpOpCode {
     public static let nikonGetPictureControl: UInt16 = 0x90CC
     public static let nikonStartLiveView: UInt16 = 0x9201
     public static let nikonEndLiveView: UInt16 = 0x9202
+    public static let nikonChangeAfArea: UInt16 = 0x9205
+    public static let nikonStartMovie: UInt16 = 0x920A
+    public static let nikonStopMovie: UInt16 = 0x920B
     public static let nikonCaptureToMedia: UInt16 = 0x9207
     public static let nikonGetLiveViewImage: UInt16 = 0x9203
     public static let nikonGetPairingCode: UInt16 = 0x952B

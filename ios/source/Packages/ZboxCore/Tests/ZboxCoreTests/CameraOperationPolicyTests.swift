@@ -26,7 +26,7 @@ final class CameraOperationPolicyTests: XCTestCase {
         let streaming = CameraOperationPolicy(connected: true, pairingPrepared: false, busy: [], liveView: .streaming)
         let transition = CameraOperationPolicy(connected: true, pairingPrepared: false, busy: [], liveView: .transitioning)
         for request in CameraOperationPolicy.Request.allCases {
-            XCTAssertEqual(streaming.permits(request), request == .capture || request == .focus)
+            XCTAssertEqual(streaming.permits(request), request == .capture || request == .focus || request == .movie)
             XCTAssertFalse(transition.permits(request))
         }
         let pairing = CameraOperationPolicy(connected: true, pairingPrepared: true, busy: [], liveView: .streaming)

@@ -43,9 +43,7 @@ struct MonitorHomeView: View {
         ZStack(alignment: .bottomTrailing) {
             RoundedRectangle(cornerRadius: 14).fill(Color.black)
             if let bytes = model.liveViewJPEG, let image = UIImage(data: bytes) {
-                Image(uiImage: image).resizable().scaledToFit().clipShape(RoundedRectangle(cornerRadius: 14))
-                    .accessibilityLabel("相机实时取景")
-                ViewfinderGuides(imageSize: image.size).clipShape(RoundedRectangle(cornerRadius: 14))
+                ViewfinderPicture(model: model, image: image).clipShape(RoundedRectangle(cornerRadius: 14))
             } else {
                 VStack(spacing: 6) {
                     Image(systemName: "viewfinder").font(.title2)
@@ -82,9 +80,9 @@ struct MonitorHomeView: View {
                 }
                 Button("AF", systemImage: "scope") { Task { await model.autofocusOnce() } }.disabled(!model.canAutofocus)
                 Button("AI 构图", systemImage: "sparkles") {}.disabled(true)
-                Button("录像", systemImage: "video") {}.disabled(true)
             }.font(.caption).buttonStyle(.bordered).frame(maxWidth: .infinity)
-            Text("\(model.focusMessage) · AF 为实验功能；AI 构图及录像尚未实现")
+            MovieControls(model: model)
+            Text("\(model.focusMessage) · AF 为实验功能；AI 构图尚未实现")
                 .font(.caption2).foregroundStyle(.secondary)
             HStack {
                 NavigationLink { ExposureEditorScreen(model: model) } label: { Label("曝光", systemImage: "slider.horizontal.3") }
@@ -134,7 +132,7 @@ struct MonitorHomeView: View {
                             }
                         }
                     }
-                    Text("九宫格与 16:9 画幅框仅在手机显示，可在设置中开关；不修改照片")
+                    Text("轻点画面尝试触点对焦；辅助叠加仅分析预览，不修改原片")
                         .font(.caption2).foregroundStyle(.secondary)
                     controls
                     HStack {

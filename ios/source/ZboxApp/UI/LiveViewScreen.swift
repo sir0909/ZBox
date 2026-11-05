@@ -50,8 +50,7 @@ struct LiveViewScreen: View {
         ZStack {
             Color(white: 0.08)
             if let data = model.liveViewJPEG, let image = UIImage(data: data) {
-                Image(uiImage: image).resizable().scaledToFit().accessibilityLabel("相机实时取景")
-                ViewfinderGuides(imageSize: image.size)
+                ViewfinderPicture(model: model, image: image)
             } else {
                 VStack(spacing: 10) {
                     Image(systemName: "viewfinder").font(.largeTitle)
@@ -86,6 +85,7 @@ struct LiveViewScreen: View {
             Button(model.focusBusy ? "对焦中…" : "单次 AF") { Task { await model.autofocusOnce() } }
                 .disabled(!model.canAutofocus).buttonStyle(.bordered)
             Text(model.focusMessage).font(.caption2).foregroundStyle(.white.opacity(0.7))
+            MovieControls(model: model, compact: true)
             HStack {
                 NavigationLink { ExposureEditorScreen(model: model) } label: {
                     Label("曝光", systemImage: "slider.horizontal.3")
@@ -101,6 +101,34 @@ struct LiveViewScreen: View {
         .padding(10)
     }
 
+    private var landscapeLeftRail: some View {
+        VStack(spacing: 8) {
+            Button { dismiss() } label: { Label("退出", systemImage: "chevron.left") }
+            if model.liveViewPhase == .idle {
+                Button("开始取景") { model.startLiveView() }.disabled(!model.canStartLiveView)
+            } else {
+                Button("停取景") { Task { await model.stopLiveView() } }.disabled(model.liveViewPhase == .stopping)
+            }
+            Button("单次 AF") { Task { await model.autofocusOnce() } }.disabled(!model.canAutofocus)
+            Spacer(minLength: 0)
+            Text("LIVE · \(model.liveViewFrames)").font(.caption2.monospacedDigit())
+        }.font(.caption2).buttonStyle(.bordered).padding(6).frame(maxHeight: .infinity)
+    }
+    private var landscapeRightRail: some View {
+        ScrollView {
+            VStack(spacing: 8) {
+                NavigationLink { ExposureEditorScreen(model: model) } label: { Text("曝光") }
+                Button { confirmCapture = true } label: {
+                    Circle().stroke(.yellow, lineWidth: 3).frame(width: 44, height: 44)
+                        .overlay(Circle().fill(.yellow).frame(width: 30, height: 30))
+                }.disabled(!model.canCapture).accessibilityLabel("拍摄到机身存储卡")
+                NavigationLink { ExposureEditorScreen(model: model, menu: true) } label: { Text("i 菜单") }
+                MovieControls(model: model, compact: true)
+                Text(model.focusMessage).font(.caption2).foregroundStyle(.secondary)
+            }.font(.caption2).buttonStyle(.bordered).padding(6)
+        }
+    }
+
     var body: some View {
         GeometryReader { geometry in
             let landscape = geometry.size.width > geometry.size.height
@@ -110,8 +138,9 @@ struct LiveViewScreen: View {
                     header
                     if landscape {
                         HStack(spacing: 0) {
+                            landscapeLeftRail.frame(width: min(geometry.size.width * 0.15, 130))
                             viewfinder
-                            ScrollView { controls }.frame(width: min(geometry.size.width * 0.34, 300))
+                            landscapeRightRail.frame(width: min(geometry.size.width * 0.18, 160))
                         }
                     } else {
                         viewfinder

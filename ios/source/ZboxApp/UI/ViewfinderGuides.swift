@@ -6,6 +6,8 @@ struct ViewfinderGuides: View {
     let imageSize: CGSize
     @AppStorage("viewfinder.grid") private var grid = false
     @AppStorage("viewfinder.frame16x9") private var frame = false
+    @AppStorage("viewfinder.frame1x1") private var square = false
+    @AppStorage("viewfinder.frame4x5") private var portrait = false
 
     var body: some View {
         Canvas { context, size in
@@ -22,10 +24,12 @@ struct ViewfinderGuides: View {
                 }
                 context.stroke(path, with: .color(.white.opacity(0.7)), lineWidth: 1)
             }
-            if frame, let guide = ViewfinderGeometry.aspectFit(contentWidth: 16, contentHeight: 9,
-                                                                 boundsWidth: fit.width, boundsHeight: fit.height) {
-                let guideRect = CGRect(x: fit.x + guide.x, y: fit.y + guide.y, width: guide.width, height: guide.height)
-                context.stroke(Path(guideRect), with: .color(.yellow.opacity(0.9)), style: StrokeStyle(lineWidth: 1, dash: [5, 3]))
+            for (enabled, width, height) in [(frame, 16.0, 9.0), (square, 1.0, 1.0), (portrait, 4.0, 5.0)] where enabled {
+                if let guide = ViewfinderGeometry.aspectFit(contentWidth: width, contentHeight: height,
+                                                              boundsWidth: fit.width, boundsHeight: fit.height) {
+                    let guideRect = CGRect(x: fit.x + guide.x, y: fit.y + guide.y, width: guide.width, height: guide.height)
+                    context.stroke(Path(guideRect), with: .color(.yellow.opacity(0.9)), style: StrokeStyle(lineWidth: 1, dash: [5, 3]))
+                }
             }
         }
         .allowsHitTesting(false)

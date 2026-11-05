@@ -6,6 +6,11 @@ struct AppRootView: View {
     @State private var guidDraft = ""
     @AppStorage("viewfinder.grid") private var gridGuide = false
     @AppStorage("viewfinder.frame16x9") private var frameGuide = false
+    @AppStorage("viewfinder.frame1x1") private var squareGuide = false
+    @AppStorage("viewfinder.frame4x5") private var portraitGuide = false
+    @AppStorage("viewfinder.zebra") private var zebra = false
+    @AppStorage("viewfinder.peaking") private var peaking = false
+    @AppStorage("viewfinder.histogram") private var histogram = false
 
     private func slotDescription(_ slot: PictureControlSlot) -> String {
         switch slot.state {
@@ -21,7 +26,12 @@ struct AppRootView: View {
                 Section("取景辅助（仅手机显示）") {
                     Toggle("九宫格", isOn: $gridGuide)
                     Toggle("16:9 画幅框", isOn: $frameGuide)
-                    Text("辅助线只叠加在手机画面上，不修改相机设置或原照片。")
+                    Toggle("1:1 画幅框", isOn: $squareGuide)
+                    Toggle("4:5 画幅框", isOn: $portraitGuide)
+                    Toggle("高光斑马纹（预览亮度 ≥245）", isOn: $zebra)
+                    Toggle("峰值边缘提示", isOn: $peaking)
+                    Toggle("预览亮度直方图", isOn: $histogram)
+                    Text("只分析手机回传预览，不代表 RAW 曝光或机身合焦；不修改相机设置或原照片。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("工程状态") {
