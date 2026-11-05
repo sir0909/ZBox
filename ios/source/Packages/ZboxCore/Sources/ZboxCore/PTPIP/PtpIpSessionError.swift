@@ -3,6 +3,7 @@ import Foundation
 /// PTP/IP 会话层错误。`stage` 用于告诉用户失败发生在哪一步。
 public enum PtpIpSessionError: Error, Equatable, Sendable {
     case timeout(stage: String)
+    case dataLimitExceeded(limit: Int)
     case closed
     case notConnected
     /// 相机返回 InitFail。reason=1 表示拒绝当前客户端身份(安卓的兼容名称重试只针对它)。

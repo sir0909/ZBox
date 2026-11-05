@@ -150,18 +150,26 @@ public actor PtpIpSession {
         opCode: UInt16,
         params: [UInt32] = [],
         expectData: Bool = false,
-        timeoutSeconds: Double? = nil
+        timeoutSeconds: Double? = nil,
+        maxDataBytes: Int = 32 * 1024 * 1024
     ) async throws -> PtpOperationResult {
         guard connectionInfo != nil else { throw PtpIpSessionError.notConnected }
+        guard (0...(32 * 1024 * 1024)).contains(maxDataBytes) else {
+            throw PtpIpSessionError.malformed(stage: "命令", detail: "数据长度上限非法")
+        }
         let timeout = timeoutSeconds ?? config.commandTimeoutSeconds
         do {
             return try await lock.withLock { [self] in
-                try await self.runOperation(opCode: opCode, params: params, expectData: expectData, timeout: timeout)
+                try await self.runOperation(opCode: opCode, params: params, expectData: expectData, timeout: timeout, maxDataBytes: maxDataBytes)
             }
         } catch PtpIpSessionError.timeout(let stage) {
             // A timed-out transaction has a closed channel and cannot be reused safely.
             await close()
             throw PtpIpSessionError.timeout(stage: stage)
+        } catch PtpIpSessionError.dataLimitExceeded(let limit) {
+            // The remainder of the transaction may still be on the wire.
+            await close()
+            throw PtpIpSessionError.dataLimitExceeded(limit: limit)
         }
     }
 
@@ -191,6 +199,55 @@ public actor PtpIpSession {
         }
         guard result.data.count == 1, let value = result.data.first, value <= 100 else { return nil }
         return value
+    }
+
+    /// Nikon STA album operations. They are read-only and must be initiated explicitly.
+    public func fetchStorageIDsForAlbum() async throws -> [UInt32] {
+        let result = try await execute(opCode: PtpOpCode.getStorageIDs, expectData: true,
+                                       timeoutSeconds: 15, maxDataBytes: 4 + 64 * 4)
+        guard result.response.isOK else {
+            throw PtpIpSessionError.operationFailed(code: result.response.code, opCode: PtpOpCode.getStorageIDs)
+        }
+        return try NikonSTAAlbum.parseStorageIDs(result.data)
+    }
+
+    public func fetchNikonSTAMetadata(storageID: UInt32) async throws -> [NikonSTAAlbumItem] {
+        let result = try await execute(opCode: PtpOpCode.nikonObjectsMetadata,
+                                       params: [storageID, 0, 0], expectData: true,
+                                       timeoutSeconds: 90, maxDataBytes: 2 * 1024 * 1024)
+        guard result.response.isOK else {
+            throw PtpIpSessionError.operationFailed(code: result.response.code, opCode: PtpOpCode.nikonObjectsMetadata)
+        }
+        return try NikonSTAAlbum.parseMetadata(result.data, storageID: storageID)
+    }
+
+    public func fetchNikonSTAObjectSize(handle: UInt32) async throws -> UInt64 {
+        let result = try await execute(opCode: PtpOpCode.nikonObjectSize, params: [handle],
+                                       expectData: true, timeoutSeconds: 15, maxDataBytes: 8)
+        guard result.response.isOK else {
+            throw PtpIpSessionError.operationFailed(code: result.response.code, opCode: PtpOpCode.nikonObjectSize)
+        }
+        guard result.data.count == 8 else {
+            throw PtpIpSessionError.malformed(stage: "STA 相册", detail: "文件大小格式异常")
+        }
+        return result.data.readLE(UInt64.self, at: 0)
+    }
+
+    /// Read at most one bounded chunk; reject over-returns and empty data before EOF.
+    public func fetchNikonSTAPartial(handle: UInt32, offset: UInt64, length: Int) async throws -> Data {
+        guard (1...(1024 * 1024)).contains(length) else {
+            throw PtpIpSessionError.malformed(stage: "STA 相册", detail: "请求块大小非法")
+        }
+        let result = try await execute(opCode: PtpOpCode.nikonPartialObjectEx,
+            params: [handle, UInt32(truncatingIfNeeded: offset), UInt32(truncatingIfNeeded: offset >> 32), UInt32(length), 0],
+            expectData: true, timeoutSeconds: 30, maxDataBytes: length)
+        guard result.response.isOK else {
+            throw PtpIpSessionError.operationFailed(code: result.response.code, opCode: PtpOpCode.nikonPartialObjectEx)
+        }
+        guard !result.data.isEmpty else {
+            throw PtpIpSessionError.malformed(stage: "STA 相册", detail: "分段返回空数据")
+        }
+        return result.data
     }
 
     /// Read one known exposure value; non-OK responses remain unavailable, not defaults.
@@ -251,7 +308,8 @@ public actor PtpIpSession {
         opCode: UInt16,
         params: [UInt32],
         expectData: Bool,
-        timeout: Double
+        timeout: Double,
+        maxDataBytes: Int = 32 * 1024 * 1024
     ) async throws -> PtpOperationResult {
         transactionId &+= 1
         let tx = transactionId
@@ -276,6 +334,13 @@ public actor PtpIpSession {
                 return PtpOperationResult(response: response, data: expectData ? data : Data())
             case PtpIpPacketType.startData.rawValue, PtpIpPacketType.data.rawValue, PtpIpPacketType.endData.rawValue:
                 let chunk = try PtpIpOperationParser.dataChunk(packet)
+                if packet.type == PtpIpPacketType.startData.rawValue,
+                   packet.payload.readLE(UInt64.self, at: 4) > UInt64(max(0, maxDataBytes)) {
+                    throw PtpIpSessionError.dataLimitExceeded(limit: maxDataBytes)
+                }
+                guard chunk.bytes.count <= max(0, maxDataBytes - data.count) else {
+                    throw PtpIpSessionError.dataLimitExceeded(limit: maxDataBytes)
+                }
                 guard chunk.transactionId == tx else {
                     throw PtpIpSessionError.transactionMismatch(expected: tx, actual: chunk.transactionId)
                 }
