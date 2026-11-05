@@ -46,6 +46,8 @@ final class CameraConnectionModel: ObservableObject {
     @Published private(set) var albumMessage = "手动读取相机相册（仅 STA）"
     @Published private(set) var albumProgress: Double?
     @Published private(set) var albumDownloadURL: URL?
+    @Published private(set) var albumPreviewJPEG: Data?
+    @Published private(set) var albumPreviewTitle = ""
     private var albumCancelRequested = false
     @Published private(set) var captureBusy = false
     @Published private(set) var captureMessage = "拍摄到机身存储卡"
@@ -204,6 +206,8 @@ final class CameraConnectionModel: ObservableObject {
         connectedSTA = false
         albumBusy = false
         albumItems = []
+        albumPreviewJPEG = nil
+        albumPreviewTitle = ""
         albumProgress = nil
         captureBusy = false
         liveViewStopRequested = true
@@ -541,6 +545,8 @@ final class CameraConnectionModel: ObservableObject {
         albumBusy = true
         albumCancelRequested = false
         albumItems = []
+        albumPreviewJPEG = nil
+        albumPreviewTitle = ""
         albumMessage = "正在读取存储和元数据…"
         defer { if session === active { albumBusy = false } }
         do {
@@ -567,6 +573,45 @@ final class CameraConnectionModel: ObservableObject {
         } catch {
             guard session === active, phase == .connected else { return }
             albumMessage = "相册读取异常，连接已关闭：\(describe(error))"
+            await disconnect(reason: albumMessage)
+        }
+    }
+
+    /// Read at most the first 256 KiB; embedded previews outside the prefix are not fetched.
+    func previewSTAItem(_ item: NikonSTAAlbumItem) async {
+        guard let active = session, phase == .connected, connectedSTA, !albumBusy,
+              !liveViewBusy, !batteryBusy, !slotsBusy, !monitorBusy, !exposureBusy,
+              !pairingBusy, !pairingPrepared, !captureBusy, albumItems.contains(item) else { return }
+        albumBusy = true
+        albumCancelRequested = false
+        albumPreviewJPEG = nil
+        albumPreviewTitle = item.placeholderName
+        albumMessage = "正在读取受限文件头预览…"
+        defer { if session === active { albumBusy = false } }
+        do {
+            let size = try await active.fetchNikonSTAObjectSize(handle: item.handle)
+            guard session === active, phase == .connected, !albumCancelRequested else { throw CancellationError() }
+            let limit = Int(min(size, UInt64(EmbeddedJPEG.maxPrefixBytes)))
+            guard limit > 0 else { albumMessage = "文件大小未知，无法预览"; return }
+            var prefix = Data()
+            while prefix.count < limit {
+                guard session === active, phase == .connected, !albumCancelRequested else { throw CancellationError() }
+                let chunk = try await active.fetchNikonSTAPartial(handle: item.handle, offset: UInt64(prefix.count), length: limit - prefix.count)
+                guard session === active, phase == .connected, !albumCancelRequested else { throw CancellationError() }
+                prefix.append(chunk)
+            }
+            guard let jpeg = EmbeddedJPEG.largestComplete(in: prefix) else {
+                albumMessage = "前 256 KiB 未发现完整内嵌 JPEG；可选择下载原文件"; return
+            }
+            albumPreviewJPEG = jpeg
+            albumMessage = "已读取内嵌 JPEG 标记；若图片不可解码，请下载原文件查看"
+        } catch is CancellationError {
+            if session === active { albumMessage = "预览读取已取消" }
+        } catch PtpIpSessionError.operationFailed(let code, let op) {
+            if session === active { albumMessage = String(format: "相机拒绝预览：0x%04X 返回 0x%04X", op, code) }
+        } catch {
+            guard session === active, phase == .connected else { return }
+            albumMessage = "预览读取异常，连接已关闭：\(describe(error))"
             await disconnect(reason: albumMessage)
         }
     }

@@ -1,11 +1,27 @@
 import SwiftUI
 import ZboxCore
+import ImageIO
+import UIKit
 
 /// Read-only Nikon STA metadata and explicit, bounded original download.
 struct STAAlbumScreen: View {
     @ObservedObject var model: CameraConnectionModel
     @State private var selected: NikonSTAAlbumItem?
     @State private var confirming = false
+
+    private func thumbnail(_ data: Data) -> UIImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let info = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = info[kCGImagePropertyPixelWidth] as? Int,
+              let height = info[kCGImagePropertyPixelHeight] as? Int,
+              width > 0, height > 0, width <= 10_000, height <= 10_000,
+              Int64(width) * Int64(height) <= 80_000_000 else { return nil }
+        let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                                         kCGImageSourceThumbnailMaxPixelSize: 800,
+                                         kCGImageSourceCreateThumbnailWithTransform: true]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        return UIImage(cgImage: image)
+    }
 
     var body: some View {
         List {
@@ -21,7 +37,7 @@ struct STAAlbumScreen: View {
                     if let progress = model.albumProgress { ProgressView(value: progress) }
                 }
                 Text(model.albumMessage).font(.footnote).foregroundStyle(.secondary)
-                Text("实验功能，尚未在 iPhone + Z 30 真机验证。仅支持相机加入网络的 Nikon STA 路径。名称是句柄占位名，不是真实文件名；没有缩略图。")
+                Text("实验功能，尚未在 iPhone + Z 30 真机验证。仅支持相机加入网络的 Nikon STA 路径。名称是句柄占位名，不是真实文件名；预览只尝试读取文件头内的 JPEG。")
                     .font(.footnote).foregroundStyle(.secondary)
                 if let url = model.albumDownloadURL {
                     ShareLink(item: url) { Label("分享 / 保存已下载文件", systemImage: "square.and.arrow.up") }
@@ -29,25 +45,30 @@ struct STAAlbumScreen: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }
+            if let jpeg = model.albumPreviewJPEG {
+                Section("预览：\(model.albumPreviewTitle)") {
+                    if let image = thumbnail(jpeg) {
+                        Image(uiImage: image).resizable().scaledToFit().frame(maxHeight: 300)
+                    } else {
+                        Text("内嵌数据不可解码或尺寸超过限制").foregroundStyle(.secondary)
+                    }
+                }
+            }
             Section("媒体（最多展示 500 项）") {
                 ForEach(model.albumItems) { item in
-                    Button {
-                        selected = item
-                        confirming = true
-                    } label: {
-                        HStack {
-                            Image(systemName: item.kind == .raw ? "camera" : (item.kind == .jpeg ? "photo" : "video"))
-                                .frame(width: 28)
-                            VStack(alignment: .leading) {
-                                Text(item.placeholderName)
-                                Text(item.capturedAt ?? "拍摄时间未知")
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Image(systemName: "arrow.down.circle")
+                    HStack {
+                        Image(systemName: item.kind == .raw ? "camera" : (item.kind == .jpeg ? "photo" : "video"))
+                            .frame(width: 28)
+                        VStack(alignment: .leading) {
+                            Text(item.placeholderName)
+                            Text(item.capturedAt ?? "拍摄时间未知").font(.caption).foregroundStyle(.secondary)
                         }
+                        Spacer()
+                        Button("预览") { Task { await model.previewSTAItem(item) } }
+                        Button("下载") { selected = item; confirming = true }
                     }
-                    .disabled(model.albumBusy || model.liveViewBusy || model.captureBusy || model.phase != .connected)
+                    .buttonStyle(.borderless)
+                    .disabled(model.albumBusy || model.liveViewBusy || model.captureBusy || model.exposureBusy || model.batteryBusy || model.slotsBusy || model.monitorBusy || model.pairingBusy || model.pairingPrepared || model.phase != .connected)
                 }
             }
         }
