@@ -2,8 +2,8 @@
 
 > **M1 状态（云端编译已通过，待真机验证）**
 > - 已写入：`project.yml`；仓库根的 `.github/workflows/ios-build.yml`；`Packages/ZboxCore`（PTP 容器与 PTP/IP 编解码、会话状态机、Nikon 连接策略、热点地址规划、DeviceInfo 解析，基线 36 项单元测试及后续新增的电池和超时测试）；`ZboxApp`（SwiftUI 界面、Keychain GUID、Network.framework 字节通道、热点扫描、日志控制台）。
-> - 电池读取提交 `519f505` 的 39 项 `ZboxCore` 测试、macOS/Xcode 编译与未签名 IPA 打包已在 [Actions 41995924094](https://github.com/sir0909/ZBox/actions/runs/41995924094) 成功。后续超时修复需以其对应提交的 CI 为准。
-> - 只读电池读取已接入（手动触发，标准 0x1015/0x5001，CI 已通过，尚需真机验证）。未完成：15 秒保活、C-1…C-9 设置槽读取、Bonjour（`_ptp._tcp`）发现、真机验收（iPhone 热点 + Nikon Z 30）。
+> - 提交 `6e1ec0d` 的 46 项 `ZboxCore` 测试、macOS/Xcode 编译与未签名 IPA 打包已在 [Actions 41997948776](https://github.com/sir0909/ZBox/actions/runs/41997948776) 成功。后续 Bonjour 改动需以其对应提交的 CI 为准。
+> - 已接入只读电池读取、15 秒空闲连接监测、C-1…C-9 只读读取和 Bonjour 候选服务发现。心跳和槽位读取在提交 `6e1ec0d` 的 46 项测试与云端构建通过；Bonjour 及所有功能仍需对应提交的云端构建和 iPhone + Nikon Z 30 真机验证。拒绝访问不等于确认空槽；Bonjour 未找到服务时使用热点扫描或手动 IP。
 > - 应用目标暂用 Swift 5 语言模式（Xcode 设置 `SWIFT_VERSION=5.0`）；`ZboxCore` 包为 Swift 6 工具链。待编译通过后再切换应用目标为 Swift 6。
 > - 本目录已合并进安卓仓库 `sir0909/ZBox` 的 `ios/` 目录（工程目录即 `ios/source`）。云端工作流位于仓库根 `.github/workflows/ios-build.yml`。发布 iOS 版请使用标签 `ios-v*`，且不要标记为 latest（安卓版更新检查读取 `/releases/latest`）。
 

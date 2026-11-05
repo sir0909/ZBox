@@ -37,6 +37,21 @@ struct AppRootView: View {
                         .disabled(model.phase != .idle)
                     }
 
+                    Button("Bonjour 发现相机") {
+                        Task { await model.scanBonjour() }
+                    }
+                    .disabled(model.phase != .idle)
+                    ForEach(model.bonjourCandidates) { candidate in
+                        Button("连接 \(candidate.name)（\(candidate.type)）") {
+                            Task { await model.connectBonjour(candidate) }
+                        }
+                        .disabled(model.phase != .idle)
+                    }
+                    Picker("手动 / Bonjour 连接模式", selection: $model.cameraJoinsNetwork) {
+                        Text("手机连相机热点").tag(false)
+                        Text("相机加入网络或手机热点").tag(true)
+                    }
+                    .disabled(model.phase != .idle)
                     TextField("相机 IP（手动，例如 172.20.10.2）", text: $model.manualHost)
                         .keyboardType(.decimalPad)
                         .textInputAutocapitalization(.never)

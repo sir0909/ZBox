@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import ZboxCore
 
 /// 连接流程的界面状态。所有 PTP 调用都经过 `ZboxCore.PtpIpSession`。
@@ -16,6 +17,8 @@ final class CameraConnectionModel: ObservableObject {
 
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var candidates: [HotspotCameraEndpoint] = []
+    @Published private(set) var bonjourCandidates: [BonjourCameraCandidate] = []
+    @Published var cameraJoinsNetwork = false
     @Published private(set) var deviceRows: [DeviceRow] = []
     @Published private(set) var statusMessage = "尚未连接"
     @Published private(set) var needsRecovery = false
@@ -100,6 +103,30 @@ final class CameraConnectionModel: ObservableObject {
         }
     }
 
+    func scanBonjour() async {
+        guard phase == .idle else { return }
+        phase = .scanning
+        bonjourCandidates = []
+        log.add("开始 Bonjour 服务发现")
+        let result = await BonjourCameraScanner.scan()
+        bonjourCandidates = result.candidates
+        phase = .idle
+        if result.candidates.isEmpty {
+            statusMessage = result.failures.isEmpty
+                ? "未发现 Bonjour 服务；相机可能不广播，可尝试热点扫描或手动 IP"
+                : "Bonjour 发现失败；请检查本地网络权限或尝试手动 IP"
+        } else {
+            statusMessage = "发现 \(result.candidates.count) 个 Bonjour 候选服务，请选择；发现不代表相机已认证"
+        }
+        log.add("Bonjour 发现结束：\(result.candidates.count) 个候选，\(result.failures.count) 项浏览错误")
+    }
+
+    func connectBonjour(_ candidate: BonjourCameraCandidate) async {
+        guard phase == .idle else { return }
+        await openSession(endpoint: candidate.endpoint, localAddress: nil,
+                          staMode: cameraJoinsNetwork, displayName: "Bonjour 服务")
+    }
+
     func connect(_ endpoint: HotspotCameraEndpoint) async {
         guard phase == .idle else { return }
         await openSession(host: endpoint.cameraAddress, localAddress: endpoint.phoneAddress)
@@ -112,7 +139,7 @@ final class CameraConnectionModel: ObservableObject {
             statusMessage = "请输入有效的 IPv4 地址，例如 172.20.10.2"
             return
         }
-        await openSession(host: host, localAddress: nil)
+        await openSession(host: host, localAddress: nil, staMode: cameraJoinsNetwork)
     }
 
     func disconnect(reason: String = "已断开") async {
@@ -137,27 +164,36 @@ final class CameraConnectionModel: ObservableObject {
         await oldSession?.close()
     }
 
-    private func openSession(host: String, localAddress: String?) async {
-        await session?.close()
-        session = nil
+    private func openSession(host: String, localAddress: String?, staMode: Bool? = nil) async {
+        let endpoint = NWEndpoint.hostPort(
+            host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: PtpIpCodec.defaultPort)!
+        )
+        await openSession(endpoint: endpoint, localAddress: localAddress,
+                          staMode: staMode ?? (localAddress != nil), displayName: host)
+    }
+
+    private func openSession(endpoint: NWEndpoint, localAddress: String?, staMode: Bool, displayName: String) async {
+        guard phase == .idle else { return }
         phase = .connecting
+        let oldSession = session
+        session = nil
+        await oldSession?.close()
         batteryLevel = nil
         batteryBusy = false
         needsRecovery = false
         pairingPIN = nil
         pairingPrepared = false
         pairingBusy = false
-        let staMode = localAddress != nil
-        log.add("连接 \(host):15740（\(staMode ? "热点 STA" : "直连")）")
+        log.add("连接 \(displayName)（\(staMode ? "相机加入网络" : "手机连相机热点")）")
         do {
             let guid = try ClientIdentityStore.loadOrCreateGuid()
             let connected = try await PtpIpConnector.connect { name in
-                let command = NetworkPtpIpChannel(host: host, localAddress: localAddress)
+                let command = NetworkPtpIpChannel(endpoint: endpoint, localAddress: localAddress)
                 try await command.open(timeoutSeconds: 6)
                 return PtpIpSession(
                     commandChannel: command,
                     openEventChannel: {
-                        let event = NetworkPtpIpChannel(host: host, localAddress: localAddress)
+                        let event = NetworkPtpIpChannel(endpoint: endpoint, localAddress: localAddress)
                         try await event.open(timeoutSeconds: 6)
                         return event
                     },

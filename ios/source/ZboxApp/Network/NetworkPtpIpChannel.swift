@@ -24,16 +24,24 @@ actor NetworkPtpIpChannel: PtpIpByteChannel {
     private let queue = DispatchQueue(label: "com.zbox.ai.ptpip.channel")
 
     init(host: String, port: UInt16 = PtpIpCodec.defaultPort, localAddress: String?) {
+        let endpoint = NWEndpoint.hostPort(
+            host: NWEndpoint.Host(host),
+            port: NWEndpoint.Port(rawValue: port) ?? NWEndpoint.Port(rawValue: PtpIpCodec.defaultPort)!
+        )
+        connection = Self.makeConnection(endpoint: endpoint, localAddress: localAddress)
+    }
+
+    init(endpoint: NWEndpoint, localAddress: String?) {
+        connection = Self.makeConnection(endpoint: endpoint, localAddress: localAddress)
+    }
+
+    private static func makeConnection(endpoint: NWEndpoint, localAddress: String?) -> NWConnection {
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
         if let localAddress, let local = IPv4Address(localAddress) {
             parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(local), port: 0)
         }
-        connection = NWConnection(
-            host: NWEndpoint.Host(host),
-            port: NWEndpoint.Port(rawValue: port) ?? NWEndpoint.Port(rawValue: PtpIpCodec.defaultPort)!,
-            using: parameters
-        )
+        return NWConnection(to: endpoint, using: parameters)
     }
 
     /// 建立 TCP 连接;超时或失败时抛出 `PtpIpSessionError`。

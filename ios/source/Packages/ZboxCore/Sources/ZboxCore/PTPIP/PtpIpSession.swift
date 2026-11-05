@@ -3,7 +3,7 @@ import Foundation
 public struct PtpIpSessionConfig: Sendable {
     public var initiatorGuid: Data
     public var initiatorName: String
-    /// true 表示手机作为热点客户端(STA)连接相机。
+    /// true 表示相机作为 STA 加入手机热点或局域网；false 表示手机连接相机热点。
     public var staMode: Bool
     public var commandTimeoutSeconds: Double
     public var openSessionTimeoutSeconds: Double
