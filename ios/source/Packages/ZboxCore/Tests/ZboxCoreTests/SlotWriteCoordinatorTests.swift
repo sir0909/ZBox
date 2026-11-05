@@ -7,10 +7,13 @@ private actor FakeSlotTransport: SlotWriteTransport {
     var writes = 0
     var failWrite = false
     var alterReadback = false
+    var alterBeforeWireGate = false
     func cameraID() async throws -> String { camera }
     func read(slot: Int) async throws -> Data { payload }
-    func writeOnce(slot: Int, payload: Data, expectedCameraID: String) async throws {
+    func writeOnce(slot: Int, payload: Data, expectedCameraID: String, expectedOriginal: Data) async throws {
         guard camera == expectedCameraID else { throw SlotWriteCoordinator.Failure.invalidCamera }
+        if alterBeforeWireGate { self.payload[0x50] ^= 1 }
+        guard self.payload == expectedOriginal else { throw SlotWriteCoordinator.Failure.slotChanged }
         writes += 1
         self.payload = payload
         if alterReadback { self.payload[0x50] ^= 1 }
@@ -19,6 +22,7 @@ private actor FakeSlotTransport: SlotWriteTransport {
     func setPayload(_ value: Data) { payload = value }
     func configureFailure() { failWrite = true }
     func configureMismatch() { alterReadback = true }
+    func configureWireGateChange() { alterBeforeWireGate = true }
     enum TestError: Error { case interrupted }
 }
 private actor FakeSlotJournal: SlotWriteJournal {
@@ -97,6 +101,14 @@ final class SlotWriteCoordinatorTests: XCTestCase {
         do { _ = try await c.prepare(cameraID: "camera-1", slot: 1, candidate: candidate()); XCTFail("empty slot") } catch {}
         let writes = await t.writes; XCTAssertEqual(writes, 0)
         let backups = await j.backups; XCTAssertTrue(backups.isEmpty)
+    }
+    func testFinalWireGateDetectsChangeAfterRiskArmed() async throws {
+        let t = FakeSlotTransport(), j = FakeSlotJournal(), c = SlotWriteCoordinator(transport: t, journal: j)
+        let confirmation = try await c.prepare(cameraID: "camera-1", slot: 1, candidate: candidate())
+        await t.configureWireGateChange()
+        let outcome = try await c.confirm(confirmation.id)
+        let writes = await t.writes, pending = await j.pending
+        XCTAssertEqual(outcome, .uncertain); XCTAssertEqual(writes, 0); XCTAssertTrue(pending)
     }
     func testPersistenceFailuresNeverSend() async throws {
         for arm in [false, true] {

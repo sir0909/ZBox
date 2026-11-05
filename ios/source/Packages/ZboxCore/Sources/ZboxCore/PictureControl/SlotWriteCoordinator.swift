@@ -7,9 +7,10 @@ public protocol SlotWriteTransport: Sendable {
     func cameraID() async throws -> String
     /// Exact raw 614-byte occupied custom slot. Do not normalize arbitrary wrappers.
     func read(slot: Int) async throws -> Data
-    /// At the wire lock: re-check session identity, foreground and all operation gates.
-    /// Send exactly one transaction, never retry; throwing may mean it already happened.
-    func writeOnce(slot: Int, payload: Data, expectedCameraID: String) async throws
+    /// Under the wire lock: re-check session identity, foreground and operation gates,
+    /// then re-read and compare expectedOriginal before sending. Never retry. A thrown
+    /// error may mean the command already happened. Physical camera edits can still race.
+    func writeOnce(slot: Int, payload: Data, expectedCameraID: String, expectedOriginal: Data) async throws
 }
 
 public struct SlotWriteBackup: Codable, Equatable, Sendable {
@@ -113,7 +114,8 @@ public actor SlotWriteCoordinator {
         try await journal.armAndVerifyRisk(backup)
         do {
             try Task.checkCancellation()
-            try await transport.writeOnce(slot: backup.slot, payload: backup.proposed, expectedCameraID: backup.cameraID)
+            try await transport.writeOnce(slot: backup.slot, payload: backup.proposed,
+                                          expectedCameraID: backup.cameraID, expectedOriginal: backup.original)
             guard try await transport.cameraID() == backup.cameraID else { return .uncertain }
             guard try await transport.read(slot: backup.slot) == backup.proposed else { return .uncertain }
             try await journal.clearVerifiedRisk(backup)
