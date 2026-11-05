@@ -37,8 +37,7 @@ final class CameraConnectionModel: ObservableObject {
     @Published private(set) var exposureWriteInProgress = false
     private var exposureWriteCancelled = false
     var canEditExposure: Bool {
-        phase == .connected && !exposureBusy && !albumBusy && !captureBusy &&
-        !batteryBusy && !slotsBusy && !monitorBusy && !pairingBusy && !pairingPrepared && !liveViewBusy
+        operationPolicy.permits(.exposure)
     }
     @Published private(set) var connectedSTA = false
     @Published private(set) var albumBusy = false
@@ -47,6 +46,11 @@ final class CameraConnectionModel: ObservableObject {
     @Published private(set) var albumProgress: Double?
     @Published private(set) var albumDownloadURL: URL?
     @Published private(set) var albumDownloadSHA256: String?
+    @Published private(set) var albumVerifyBusy = false
+    @Published private(set) var albumVerifyProgress: Double?
+    @Published private(set) var albumVerifyMessage = ""
+    private var albumDownloadBytes: UInt64?
+    private var albumVerifyCancelled = false
     @Published private(set) var albumPreviewJPEG: Data?
     @Published private(set) var albumPreviewTitle = ""
     @Published private(set) var albumThumbnailPage = 0
@@ -67,9 +71,7 @@ final class CameraConnectionModel: ObservableObject {
     @Published private(set) var captureMessage = "拍摄到机身存储卡"
     private var captureCancelRequested = false
     var canCapture: Bool {
-        phase == .connected && !captureBusy && !albumBusy && !batteryBusy && !monitorBusy &&
-        !slotsBusy && !exposureBusy && !pairingBusy && !pairingPrepared &&
-        (liveViewPhase == .idle || liveViewPhase == .streaming)
+        operationPolicy.permits(.capture)
     }
     @Published private(set) var clientName = PtpIpConnector.defaultPrimaryName
     enum LiveViewPhase: Equatable { case idle, starting, streaming, stopping }
@@ -79,8 +81,26 @@ final class CameraConnectionModel: ObservableObject {
     @Published private(set) var liveViewMessage = "请手动开启取景"
     var liveViewBusy: Bool { liveViewPhase != .idle }
     var canStartLiveView: Bool {
-        phase == .connected && !liveViewBusy && !batteryBusy && !monitorBusy &&
-        !slotsBusy && !exposureBusy && !albumBusy && !captureBusy && !pairingBusy && !pairingPrepared
+        operationPolicy.permits(.liveView)
+    }
+    /// Accessed only on the main actor. Each method sets its busy flag before its first await.
+    private var operationPolicy: CameraOperationPolicy {
+        var busy: Set<CameraOperationPolicy.Operation> = []
+        if batteryBusy { busy.insert(.battery) }
+        if monitorBusy { busy.insert(.monitor) }
+        if slotsBusy { busy.insert(.slots) }
+        if exposureBusy { busy.insert(.exposure) }
+        if albumBusy { busy.insert(.album) }
+        if captureBusy { busy.insert(.capture) }
+        if pairingBusy { busy.insert(.registration) }
+        let view: CameraOperationPolicy.LiveView
+        switch liveViewPhase {
+        case .idle: view = .idle
+        case .streaming: view = .streaming
+        case .starting, .stopping: view = .transitioning
+        }
+        return CameraOperationPolicy(connected: phase == .connected && session != nil,
+                                     pairingPrepared: pairingPrepared, busy: busy, liveView: view)
     }
     @Published var manualHost = ""
     @Published private(set) var guidText = "加载中…"
@@ -464,8 +484,7 @@ final class CameraConnectionModel: ObservableObject {
     }
 
     private func probeIfIdle(_ active: PtpIpSession) async {
-        guard session === active, phase == .connected, !batteryBusy, !pairingBusy,
-              !pairingPrepared, !slotsBusy, !monitorBusy, !exposureBusy, !albumBusy, !captureBusy, !liveViewBusy else { return }
+        guard session === active, operationPolicy.permits(.monitor) else { return }
         monitorBusy = true
         do {
             try await active.probeConnection()
@@ -482,8 +501,7 @@ final class CameraConnectionModel: ObservableObject {
     // MARK: - Read-only picture controls
 
     func refreshSlots() async {
-        guard let active = session, phase == .connected, !slotsBusy, !batteryBusy,
-              !monitorBusy, !pairingBusy, !pairingPrepared, !exposureBusy, !albumBusy, !captureBusy, !liveViewBusy else { return }
+        guard let active = session, operationPolicy.permits(.slots) else { return }
         slotsBusy = true
         slots = []
         defer { if session === active { slotsBusy = false } }
@@ -559,9 +577,7 @@ final class CameraConnectionModel: ObservableObject {
     }
 
     func loadSTAAlbum() async {
-        guard let active = session, phase == .connected, connectedSTA, !albumBusy,
-              !liveViewBusy, !batteryBusy, !slotsBusy, !monitorBusy, !exposureBusy,
-              !pairingBusy, !pairingPrepared, !captureBusy else { return }
+        guard let active = session, connectedSTA, operationPolicy.permits(.album) else { return }
         albumBusy = true
         albumCancelRequested = false
         albumItems = []
@@ -655,10 +671,8 @@ final class CameraConnectionModel: ObservableObject {
     }
 
     func loadThumbnailPage(start: Int, automatic: Bool = false) async {
-        guard !(automatic && albumCancelRequested), let active = session, phase == .connected, connectedSTA, !albumBusy,
-              !liveViewBusy, !batteryBusy, !slotsBusy, !monitorBusy, !exposureBusy,
-              !pairingBusy, !pairingPrepared, !captureBusy,
-              start >= 0, start < albumDisplayedItems.count, start % ThumbnailBatch.pageSize == 0 else { return }
+        guard !(automatic && albumCancelRequested), let active = session, connectedSTA,
+              operationPolicy.permits(.album), start >= 0, start < albumDisplayedItems.count, start % ThumbnailBatch.pageSize == 0 else { return }
         albumBusy = true
         albumCancelRequested = false
         albumThumbnailPage = start
@@ -700,9 +714,8 @@ final class CameraConnectionModel: ObservableObject {
     }
 
     func previewSTAItem(_ item: NikonSTAAlbumItem) async {
-        guard let active = session, phase == .connected, connectedSTA, !albumBusy,
-              !liveViewBusy, !batteryBusy, !slotsBusy, !monitorBusy, !exposureBusy,
-              !pairingBusy, !pairingPrepared, !captureBusy, albumItems.contains(item) else { return }
+        guard let active = session, connectedSTA, operationPolicy.permits(.album),
+              albumItems.contains(item) else { return }
         albumBusy = true
         albumCancelRequested = false
         albumPreviewJPEG = nil
@@ -738,14 +751,15 @@ final class CameraConnectionModel: ObservableObject {
     }
 
     func downloadSTAItem(_ item: NikonSTAAlbumItem) async {
-        guard let active = session, phase == .connected, connectedSTA, !albumBusy,
-              !liveViewBusy, !batteryBusy, !slotsBusy, !monitorBusy, !exposureBusy,
-              !pairingBusy, !pairingPrepared, !captureBusy, albumItems.contains(item) else { return }
+        guard let active = session, connectedSTA, operationPolicy.permits(.album), !albumVerifyBusy,
+              albumItems.contains(item) else { return }
         albumBusy = true
         albumCancelRequested = false
         albumProgress = 0
         albumDownloadURL = nil
         albumDownloadSHA256 = nil
+        albumDownloadBytes = nil
+        albumVerifyMessage = ""
         albumMessage = "正在读取文件大小…"
         defer { if session === active { albumBusy = false; albumProgress = nil } }
         do {
@@ -767,6 +781,7 @@ final class CameraConnectionModel: ObservableObject {
             }
             albumDownloadURL = completed.url
             albumDownloadSHA256 = completed.receivedSHA256
+            albumDownloadBytes = size
             albumMessage = "下载完成；请使用分享保存。名称为占位名，临时文件可能被系统清理。"
             log.add("STA 相册原文件下载完成，长度已核对；本地接收摘要不代表源文件内容已校验")
         } catch is CancellationError {
@@ -783,6 +798,64 @@ final class CameraConnectionModel: ObservableObject {
             // A size-limit or transport error can leave a partial PTP transaction on the wire.
             await disconnect(reason: albumMessage)
         }
+    }
+
+    // MARK: - Optional local readback (no camera commands)
+
+    /// Explicitly remove only the currently tracked temporary file, never the camera object.
+    func deleteDownloadedAlbumFile() {
+        guard !albumVerifyBusy, !albumBusy, let url = albumDownloadURL else { return }
+        do {
+            try FileManager.default.removeItem(at: url)
+            albumDownloadURL = nil
+            albumDownloadSHA256 = nil
+            albumDownloadBytes = nil
+            albumVerifyMessage = ""
+            albumMessage = "已删除应用临时文件；相机文件和已分享的副本不受影响。"
+        } catch {
+            albumMessage = "无法删除临时文件（可能已被系统清理）：\(describe(error))"
+        }
+    }
+
+    func cancelAlbumVerification() {
+        if albumVerifyBusy { albumVerifyCancelled = true }
+    }
+
+    func verifyDownloadedAlbumFile() async {
+        guard !albumVerifyBusy, !albumBusy, let url = albumDownloadURL,
+              let expected = albumDownloadSHA256, let size = albumDownloadBytes else { return }
+        albumVerifyBusy = true
+        albumVerifyCancelled = false
+        albumVerifyProgress = 0
+        albumVerifyMessage = "正在重新读取本地临时文件…"
+        defer { albumVerifyBusy = false; albumVerifyProgress = nil }
+        do {
+            let result = try await LocalFileVerification.verify(url: url, expectedSize: size, expectedSHA256: expected,
+                shouldContinue: { [weak self] in
+                    guard let self else { return false }
+                    return await self.mayContinueFileVerification(url, expected: expected)
+                }, progress: { [weak self] completed, total in
+                    guard let self else { return }
+                    await self.updateFileVerificationProgress(url, expected: expected, completed: completed, total: total)
+                })
+            guard mayContinueFileVerification(url, expected: expected) else { return }
+            albumVerifyMessage = result == .matches
+                ? "本地文件重读与接收数据摘要一致；未验证相机源文件。"
+                : "本地文件与接收数据不一致；请勿依赖此临时文件，可重新下载。"
+        } catch is CancellationError {
+            if albumDownloadURL == url { albumVerifyMessage = "本地校验已取消" }
+        } catch {
+            if albumDownloadURL == url { albumVerifyMessage = "本地文件无法校验，可能已被系统清理：\(describe(error))" }
+        }
+    }
+
+    private func mayContinueFileVerification(_ url: URL, expected: String) -> Bool {
+        albumVerifyBusy && !albumVerifyCancelled && albumDownloadURL == url && albumDownloadSHA256 == expected
+    }
+
+    private func updateFileVerificationProgress(_ url: URL, expected: String, completed: UInt64, total: UInt64) {
+        guard total > 0, mayContinueFileVerification(url, expected: expected) else { return }
+        albumVerifyProgress = Double(completed) / Double(total)
     }
 
     // MARK: - Explicit exposure editing with typed descriptor and readback
@@ -860,8 +933,7 @@ final class CameraConnectionModel: ObservableObject {
     // MARK: - Read-only exposure values (never write camera settings)
 
     func refreshExposure() async {
-        guard let active = session, phase == .connected, !exposureBusy, !batteryBusy,
-              !slotsBusy, !monitorBusy, !pairingBusy, !pairingPrepared, !albumBusy, !captureBusy, !liveViewBusy else { return }
+        guard let active = session, operationPolicy.permits(.exposure) else { return }
         exposureBusy = true
         exposureRows = []
         defer { if session === active { exposureBusy = false } }
@@ -883,7 +955,7 @@ final class CameraConnectionModel: ObservableObject {
     // MARK: - Read-only battery
 
     func refreshBattery() async {
-        guard let active = session, phase == .connected, !batteryBusy, !pairingPrepared, !pairingBusy, !monitorBusy, !slotsBusy, !exposureBusy, !albumBusy, !captureBusy, !liveViewBusy else { return }
+        guard let active = session, operationPolicy.permits(.battery) else { return }
         batteryBusy = true
         defer { if session === active { batteryBusy = false } }
         do {
@@ -908,7 +980,7 @@ final class CameraConnectionModel: ObservableObject {
     // MARK: - Nikon host registration
 
     func prepareRegistration() async {
-        guard let session, phase == .connected, !batteryBusy, !pairingBusy, !monitorBusy, !slotsBusy, !exposureBusy, !albumBusy, !captureBusy, !liveViewBusy else { return }
+        guard let session, operationPolicy.permits(.prepareRegistration) else { return }
         pairingBusy = true
         defer { if self.session === session { pairingBusy = false } }
         do {
@@ -931,7 +1003,7 @@ final class CameraConnectionModel: ObservableObject {
     }
 
     func confirmRegistration() async {
-        guard let session, phase == .connected, !batteryBusy, !pairingBusy, !monitorBusy, !slotsBusy, !exposureBusy, !albumBusy, !captureBusy, !liveViewBusy else { return }
+        guard let session, operationPolicy.permits(.confirmRegistration) else { return }
         pairingBusy = true
         defer { if self.session === session { pairingBusy = false } }
         do {

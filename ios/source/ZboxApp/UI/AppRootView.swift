@@ -185,6 +185,7 @@ struct AppRootView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase != .active {
                 model.cancelAlbumWork()
+                model.cancelAlbumVerification()
                 model.cancelPendingCapture()
                 model.cancelPendingExposureWrite()
                 Task { await model.stopLiveView() }

@@ -8,6 +8,7 @@ struct STAAlbumScreen: View {
     @ObservedObject var model: CameraConnectionModel
     @State private var selected: NikonSTAAlbumItem?
     @State private var confirming = false
+    @State private var confirmingLocalDelete = false
     @State private var isVisible = false
     @Environment(\.scenePhase) private var scenePhase
 
@@ -48,13 +49,25 @@ struct STAAlbumScreen: View {
                     .font(.footnote).foregroundStyle(.secondary)
                 if let url = model.albumDownloadURL {
                     ShareLink(item: url) { Label("分享 / 保存已下载文件", systemImage: "square.and.arrow.up") }
+                    Button("删除应用临时文件", role: .destructive) { confirmingLocalDelete = true }
+                        .disabled(model.albumBusy || model.albumVerifyBusy)
                     Text("文件暂存在应用临时目录，请及时分享保存；不自动写入照片图库。")
                         .font(.footnote).foregroundStyle(.secondary)
                     if let sha256 = model.albumDownloadSHA256 {
                         Text("接收数据 SHA-256（可用于后续比对）").font(.caption)
                         Text(sha256).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                        Text("由下载过程中的接收数据计算，未重新读取保存的文件；相机未提供校验和，不能证明与相机原文件一致。")
+                        Text("相机未提供源文件校验和，不能证明与相机原文件一致。")
                             .font(.footnote).foregroundStyle(.secondary)
+                        if model.albumVerifyBusy {
+                            Button("取消本地文件校验", role: .cancel) { model.cancelAlbumVerification() }
+                            if let progress = model.albumVerifyProgress { ProgressView(value: progress) }
+                        } else {
+                            Button("重新读取并校验本地临时文件") { Task { await model.verifyDownloadedAlbumFile() } }
+                                .disabled(model.albumBusy)
+                        }
+                        if !model.albumVerifyMessage.isEmpty {
+                            Text(model.albumVerifyMessage).font(.footnote).foregroundStyle(.secondary)
+                        }
                     }
                 }
             }
@@ -137,7 +150,7 @@ struct STAAlbumScreen: View {
                                 Button("下载") { selected = item; confirming = true }.font(.caption)
                             }
                             .buttonStyle(.borderless)
-                            .disabled(model.albumBusy || model.liveViewBusy || model.captureBusy || model.exposureBusy || model.batteryBusy || model.slotsBusy || model.monitorBusy || model.pairingBusy || model.pairingPrepared || model.phase != .connected)
+                            .disabled(model.albumBusy || model.albumVerifyBusy || model.liveViewBusy || model.captureBusy || model.exposureBusy || model.batteryBusy || model.slotsBusy || model.monitorBusy || model.pairingBusy || model.pairingPrepared || model.phase != .connected)
                         }
                     }
                 }
@@ -152,7 +165,13 @@ struct STAAlbumScreen: View {
         } message: {
             Text("将读取完整原文件；需足够空间和稳定连接。文件名为占位名，完成后请分享保存。")
         }
+        .confirmationDialog("删除应用里的临时文件？", isPresented: $confirmingLocalDelete, titleVisibility: .visible) {
+            Button("删除临时文件", role: .destructive) { model.deleteDownloadedAlbumFile() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("仅删除此下载的应用临时副本，不删除相机文件或已分享的副本。")
+        }
         .onAppear { isVisible = true }
-        .onDisappear { isVisible = false; model.cancelAlbumWork() }
+        .onDisappear { isVisible = false; model.cancelAlbumWork(); model.cancelAlbumVerification() }
     }
 }
