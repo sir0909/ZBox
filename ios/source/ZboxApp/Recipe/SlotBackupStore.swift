@@ -20,6 +20,14 @@ actor SlotBackupStore: SlotWriteRecoveryJournal {
     private func ensureDirectory() throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     }
+    /// `fileExists` collapses permission errors and dangling symlinks into false.
+    /// lstat distinguishes a truly absent marker from anything that must block writes.
+    private func riskFileExists() throws -> Bool {
+        var info = stat()
+        if lstat(riskURL.path, &info) == 0 { return true }
+        if errno == ENOENT { return false }
+        throw Failure.invalid
+    }
     private func backupURL(_ id: UUID) -> URL {
         directory.appendingPathComponent("backup-\(id.uuidString).json")
     }
@@ -80,12 +88,12 @@ actor SlotBackupStore: SlotWriteRecoveryJournal {
             } catch { corrupt += 1 }
         }
         return Listing(records: valid, corruptCount: corrupt, truncated: sorted.count > 200,
-                       riskExists: FileManager.default.fileExists(atPath: riskURL.path))
+                       riskExists: try riskFileExists())
     }
     func hasPendingRisk() async throws -> Bool {
         try ensureDirectory()
         // A corrupt or unreadable risk file is still a risk; never silently remove it.
-        return FileManager.default.fileExists(atPath: riskURL.path)
+        return try riskFileExists()
     }
     func saveAndVerifyBackup(_ backup: SlotWriteBackup) async throws {
         try ensureDirectory()
@@ -98,7 +106,7 @@ actor SlotBackupStore: SlotWriteRecoveryJournal {
     }
     func armAndVerifyRisk(_ backup: SlotWriteBackup) async throws {
         try ensureDirectory()
-        guard !FileManager.default.fileExists(atPath: riskURL.path) else { throw Failure.pending }
+        guard try !riskFileExists() else { throw Failure.pending }
         guard try read(backupURL(backup.id)) == backup else { throw Failure.missing }
         try createExclusive(encode(backup), at: riskURL)
         guard try read(riskURL) == backup else { throw Failure.invalid }
@@ -106,7 +114,7 @@ actor SlotBackupStore: SlotWriteRecoveryJournal {
     /// Never silently discard unreadable pending risk or a missing/corrupt original backup.
     func readPendingRisk() async throws -> SlotWriteBackup? {
         try ensureDirectory()
-        guard FileManager.default.fileExists(atPath: riskURL.path) else { return nil }
+        guard try riskFileExists() else { return nil }
         let risk = try read(riskURL)
         _ = try encode(risk)
         guard try read(backupURL(risk.id)) == risk else { throw Failure.invalid }

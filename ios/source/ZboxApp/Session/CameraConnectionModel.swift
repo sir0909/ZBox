@@ -165,6 +165,7 @@ final class CameraConnectionModel: ObservableObject {
         cancelAlbumVerification()
         cancelPendingCapture()
         cancelPendingExposureWrite()
+        if slotsBusy { slotBackupMessage = "应用已离开前台；请返回备份页面刷新结果。" }
         requestStopLiveView()
         if movieMayBeActive {
             movieMessage = "录像可能仍在机身进行；应用进入后台不会自动停止，请检查机身。"

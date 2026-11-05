@@ -17,6 +17,17 @@ final class SlotBackupStoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: badURL), damaged)
         XCTAssertFalse(listing.riskExists)
     }
+    func testDanglingRiskSymlinkIsNotTreatedAsAbsent() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let risk = folder.appendingPathComponent("pending-risk.json")
+        try FileManager.default.createSymbolicLink(at: risk, withDestinationURL: folder.appendingPathComponent("missing"))
+        let store = SlotBackupStore(directory: folder)
+        let isPending = try await store.hasPendingRisk(); XCTAssertTrue(isPending)
+        do { _ = try await store.readPendingRisk(); XCTFail("dangling marker was accepted") } catch {}
+        let listing = try await store.listBackups(); XCTAssertTrue(listing.riskExists)
+    }
     func testReadPendingRequiresIntactBackupAndKeepsCorruption() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: folder) }
