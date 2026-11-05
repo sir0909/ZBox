@@ -21,7 +21,7 @@ struct STAAlbumScreen: View {
                     if let progress = model.albumProgress { ProgressView(value: progress) }
                 }
                 Text(model.albumMessage).font(.footnote).foregroundStyle(.secondary)
-                Text("仅支持相机加入网络的 Nikon STA 路径。名称是句柄占位名，不是真实文件名；没有缩略图。")
+                Text("实验功能，尚未在 iPhone + Z 30 真机验证。仅支持相机加入网络的 Nikon STA 路径。名称是句柄占位名，不是真实文件名；没有缩略图。")
                     .font(.footnote).foregroundStyle(.secondary)
                 if let url = model.albumDownloadURL {
                     ShareLink(item: url) { Label("分享 / 保存已下载文件", systemImage: "square.and.arrow.up") }

@@ -531,14 +531,19 @@ final class CameraConnectionModel: ObservableObject {
         do {
             let ids = try await active.fetchStorageIDsForAlbum()
             var items: [NikonSTAAlbumItem] = []
+            var total = 0
             for id in ids {
                 guard session === active, phase == .connected, !albumCancelRequested else { throw CancellationError() }
-                items += try await active.fetchNikonSTAMetadata(storageID: id)
+                let batch = try await active.fetchNikonSTAMetadata(storageID: id)
+                total += batch.count
+                items += batch
+                // Keep at most 500 between volumes rather than retaining all card entries.
+                items.sort { ($0.capturedAt ?? "") > ($1.capturedAt ?? "") }
+                if items.count > 500 { items.removeSubrange(500...) }
             }
             guard session === active, phase == .connected, !albumCancelRequested else { throw CancellationError() }
-            items.sort { ($0.capturedAt ?? "") > ($1.capturedAt ?? "") }
-            albumItems = Array(items.prefix(500))
-            albumMessage = items.count > 500 ? "共 \(items.count) 项，仅展示前 500 项" : "读取到 \(items.count) 项（文件名为占位名）"
+            albumItems = items
+            albumMessage = total > 500 ? "共 \(total) 项，仅展示前 500 项" : "读取到 \(total) 项（文件名为占位名）"
             log.add("STA 相册元数据读取完成，未修改相机文件")
         } catch is CancellationError {
             if session === active { albumMessage = "已取消相册读取" }

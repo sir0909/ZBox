@@ -52,7 +52,7 @@ struct LiveViewScreen: View {
                             .font(.caption).foregroundStyle(.white.opacity(0.75))
                             .lineLimit(2)
                         Spacer()
-                        Button(model.captureBusy ? "拍摄中…" : "拍一张") { confirmCapture = true }
+                        Button(model.captureBusy ? "拍摄中…" : "实验性 · 拍一张") { confirmCapture = true }
                             .disabled(!model.canCapture)
                         if model.liveViewPhase == .idle {
                             Button("开始取景") { model.startLiveView() }
@@ -74,7 +74,7 @@ struct LiveViewScreen: View {
             Button("确认拍摄") { Task { await model.captureOneToCard() } }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("将先停止取景。相机接受快门命令不代表已核实落卡；如连接中断，请先检查机身，避免重复拍摄。")
+            Text("该功能尚未在 iPhone 与 Z 30 真机验证，将先停止取景。相机接受快门命令不代表已核实落卡；如连接中断，请先检查机身，避免重复拍摄。")
         }
         .onDisappear {
             model.cancelPendingCapture()
