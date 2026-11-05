@@ -21,6 +21,9 @@ final class CameraConnectionModel: ObservableObject {
     @Published private(set) var needsRecovery = false
     @Published private(set) var pairingPIN: String?
     @Published private(set) var pairingPrepared = false
+    @Published private(set) var pairingBusy = false
+    @Published private(set) var batteryLevel: UInt8?
+    @Published private(set) var batteryBusy = false
     @Published private(set) var clientName = PtpIpConnector.defaultPrimaryName
     @Published var manualHost = ""
     @Published private(set) var guidText = "加载中…"
@@ -110,8 +113,11 @@ final class CameraConnectionModel: ObservableObject {
         await session?.close()
         session = nil
         deviceRows = []
+        batteryLevel = nil
+        batteryBusy = false
         pairingPIN = nil
         pairingPrepared = false
+        pairingBusy = false
         needsRecovery = false
         phase = .idle
         statusMessage = "已断开"
@@ -122,9 +128,12 @@ final class CameraConnectionModel: ObservableObject {
         await session?.close()
         session = nil
         phase = .connecting
+        batteryLevel = nil
+        batteryBusy = false
         needsRecovery = false
         pairingPIN = nil
         pairingPrepared = false
+        pairingBusy = false
         let staMode = localAddress != nil
         log.add("连接 \(host):15740（\(staMode ? "热点 STA" : "直连")）")
         do {
@@ -177,12 +186,37 @@ final class CameraConnectionModel: ObservableObject {
         }
     }
 
+    // MARK: - Read-only battery
+
+    func refreshBattery() async {
+        guard let active = session, phase == .connected, !batteryBusy, !pairingPrepared, !pairingBusy else { return }
+        batteryBusy = true
+        defer { if session === active { batteryBusy = false } }
+        do {
+            let value = try await active.fetchBatteryLevel()
+            guard session === active, phase == .connected else { return }
+            batteryLevel = value
+            if let value {
+                log.add("电池电量读取成功：\(value)%")
+            } else {
+                log.add("相机未返回有效的电池电量")
+            }
+        } catch {
+            guard session === active, phase == .connected else { return }
+            batteryLevel = nil
+            log.add("电池电量读取失败：\(describe(error))")
+        }
+    }
+
     // MARK: - Nikon host registration
 
     func prepareRegistration() async {
-        guard let session else { return }
+        guard let session, !batteryBusy, !pairingBusy else { return }
+        pairingBusy = true
+        defer { if self.session === session { pairingBusy = false } }
         do {
             let pin = try await session.prepareHostRegistration()
+            guard self.session === session else { return }
             pairingPrepared = true
             pairingPIN = pin.isEmpty ? nil : pin
             statusMessage = pin.isEmpty
@@ -190,20 +224,25 @@ final class CameraConnectionModel: ObservableObject {
                 : "请在相机输入 PIN，完成后点确认"
             log.add("主机注册已准备（PIN 不写入日志）")
         } catch {
+            guard self.session === session else { return }
             statusMessage = "准备注册失败：\(describe(error))"
             log.add("0x952B 失败：\(describe(error))")
         }
     }
 
     func confirmRegistration() async {
-        guard let session else { return }
+        guard let session, !batteryBusy, !pairingBusy else { return }
+        pairingBusy = true
+        defer { if self.session === session { pairingBusy = false } }
         do {
             try await session.confirmHostRegistration()
+            guard self.session === session else { return }
             pairingPrepared = false
             pairingPIN = nil
             statusMessage = "主机注册已确认"
             log.add("0x935A 注册确认成功")
         } catch {
+            guard self.session === session else { return }
             pairingPrepared = false
             statusMessage = "确认注册失败：\(describe(error))；请重新准备"
             log.add("0x935A 失败：\(describe(error))")

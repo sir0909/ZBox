@@ -169,6 +169,24 @@ public actor PtpIpSession {
         return info
     }
 
+    /// Read the standard PTP battery level (0x5001) as a percentage.
+    /// Unknown, missing and out-of-range values are represented as nil.
+    public func fetchBatteryLevel() async throws -> UInt8? {
+        let result = try await execute(
+            opCode: PtpOpCode.getDevicePropValue,
+            params: [0x5001],
+            expectData: true,
+            timeoutSeconds: 4
+        )
+        guard result.response.isOK else {
+            throw PtpIpSessionError.operationFailed(
+                code: result.response.code, opCode: PtpOpCode.getDevicePropValue
+            )
+        }
+        guard result.data.count == 1, let value = result.data.first, value <= 100 else { return nil }
+        return value
+    }
+
     private func runOperation(
         opCode: UInt16,
         params: [UInt32],

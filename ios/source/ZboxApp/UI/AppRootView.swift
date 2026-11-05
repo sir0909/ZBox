@@ -52,7 +52,12 @@ struct AppRootView: View {
                         ForEach(model.deviceRows) { row in
                             LabeledContent(row.title, value: row.value)
                         }
-                        Text("电池电量与 C-1…C-9 设置槽尚未接入(M1 后续提交)。")
+                        LabeledContent("电池电量", value: model.batteryLevel.map { "\($0)%" } ?? "未读取 / 不可用")
+                        Button(model.batteryBusy ? "读取中…" : "读取电池电量") {
+                            Task { await model.refreshBattery() }
+                        }
+                        .disabled(model.batteryBusy || model.pairingPrepared || model.pairingBusy)
+                        Text("C-1…C-9 设置槽尚未接入。")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -64,11 +69,11 @@ struct AppRootView: View {
                         Button("准备注册（0x952B）") {
                             Task { await model.prepareRegistration() }
                         }
-                        .disabled(model.pairingPrepared)
+                        .disabled(model.pairingPrepared || model.batteryBusy || model.pairingBusy)
                         Button("确认注册（0x935A，等待 8.5 秒）") {
                             Task { await model.confirmRegistration() }
                         }
-                        .disabled(!model.pairingPrepared)
+                        .disabled(!model.pairingPrepared || model.pairingBusy || model.batteryBusy)
                     }
 
                     Section {
