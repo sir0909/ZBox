@@ -4,6 +4,7 @@ import ZboxCore
 struct AppRootView: View {
     @ObservedObject var model: CameraConnectionModel
     @State private var guidDraft = ""
+    @AppStorage("appearance.light") private var lightTheme = false
     @AppStorage("viewfinder.grid") private var gridGuide = false
     @AppStorage("viewfinder.frame16x9") private var frameGuide = false
     @AppStorage("viewfinder.frame1x1") private var squareGuide = false
@@ -23,6 +24,7 @@ struct AppRootView: View {
 
     var body: some View {
         List {
+                Section("外观") { Toggle("暖灰浅色主题", isOn: $lightTheme) }
                 Section("取景辅助（仅手机显示）") {
                     Toggle("九宫格", isOn: $gridGuide)
                     Toggle("16:9 画幅框", isOn: $frameGuide)
@@ -119,7 +121,7 @@ struct AppRootView: View {
                         Button(model.batteryBusy ? "读取中…" : "读取电池电量") {
                             Task { await model.refreshBattery() }
                         }
-                        .disabled(model.batteryBusy || model.pairingPrepared || model.pairingBusy || model.monitorBusy || model.slotsBusy || model.liveViewBusy || model.exposureBusy || model.albumBusy || model.captureBusy)
+                        .disabled(model.batteryBusy || model.pairingPrepared || model.pairingBusy || model.monitorBusy || model.slotsBusy || model.liveViewBusy || model.exposureBusy || model.albumBusy || model.captureBusy || model.focusBusy || model.movieBusy || model.movieMayBeActive)
                     }
 
                     Section("曝光信息") {
@@ -133,7 +135,7 @@ struct AppRootView: View {
                             Task { await model.refreshExposure() }
                         }
                         .disabled(model.exposureBusy || model.liveViewBusy || model.batteryBusy ||
-                                  model.slotsBusy || model.monitorBusy || model.pairingBusy || model.pairingPrepared || model.albumBusy || model.captureBusy)
+                                  model.slotsBusy || model.monitorBusy || model.pairingBusy || model.pairingPrepared || model.albumBusy || model.captureBusy || model.focusBusy || model.movieBusy || model.movieMayBeActive)
                         ForEach(model.exposureRows) { row in
                             LabeledContent(row.title, value: row.value)
                         }
@@ -145,7 +147,7 @@ struct AppRootView: View {
                         Button(model.slotsBusy ? "读取中…" : "读取 C-1…C-9") {
                             Task { await model.refreshSlots() }
                         }
-                        .disabled(model.slotsBusy || model.batteryBusy || model.monitorBusy || model.pairingBusy || model.pairingPrepared || model.liveViewBusy || model.exposureBusy || model.albumBusy || model.captureBusy)
+                        .disabled(model.slotsBusy || model.batteryBusy || model.monitorBusy || model.pairingBusy || model.pairingPrepared || model.liveViewBusy || model.exposureBusy || model.albumBusy || model.captureBusy || model.focusBusy || model.movieBusy || model.movieMayBeActive)
                         ForEach(model.slots) { slot in
                             LabeledContent("C-\(slot.index)", value: slotDescription(slot))
                         }
@@ -160,11 +162,11 @@ struct AppRootView: View {
                         Button("准备注册（0x952B）") {
                             Task { await model.prepareRegistration() }
                         }
-                        .disabled(model.pairingPrepared || model.batteryBusy || model.pairingBusy || model.monitorBusy || model.slotsBusy || model.liveViewBusy || model.exposureBusy || model.albumBusy || model.captureBusy)
+                        .disabled(model.pairingPrepared || model.batteryBusy || model.pairingBusy || model.monitorBusy || model.slotsBusy || model.liveViewBusy || model.exposureBusy || model.albumBusy || model.captureBusy || model.focusBusy || model.movieBusy || model.movieMayBeActive)
                         Button("确认注册（0x935A，等待 8.5 秒）") {
                             Task { await model.confirmRegistration() }
                         }
-                        .disabled(!model.pairingPrepared || model.pairingBusy || model.batteryBusy || model.monitorBusy || model.slotsBusy || model.liveViewBusy || model.exposureBusy || model.albumBusy || model.captureBusy)
+                        .disabled(!model.pairingPrepared || model.pairingBusy || model.batteryBusy || model.monitorBusy || model.slotsBusy || model.liveViewBusy || model.exposureBusy || model.albumBusy || model.captureBusy || model.focusBusy || model.movieBusy || model.movieMayBeActive)
                     }
 
                     Section {

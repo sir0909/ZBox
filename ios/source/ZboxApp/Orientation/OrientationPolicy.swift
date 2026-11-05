@@ -12,7 +12,9 @@ final class OrientationPolicy {
         init(_ mask: UIInterfaceOrientationMask) { self.mask = mask }
     }
     private let requests = NSMapTable<UIWindow, Request>.weakToStrongObjects()
-    private let normalMask: UIInterfaceOrientationMask = .allButUpsideDown
+    private var normalMask: UIInterfaceOrientationMask {
+        UIDevice.current.userInterfaceIdiom == .phone ? .portrait : .allButUpsideDown
+    }
 
     func supportedOrientations(for window: UIWindow?) -> UIInterfaceOrientationMask {
         guard let window, let request = requests.object(forKey: window) else { return normalMask }

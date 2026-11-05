@@ -6,21 +6,32 @@ struct MovieControls: View {
     @State private var confirmStop = false
     @State private var confirmChecked = false
     var compact = false
+    var inline = false
+
+    @ViewBuilder private var buttons: some View {
+        if model.movieMayBeActive {
+            Button("停止录像", systemImage: "stop.circle") { confirmStop = true }
+                .disabled(!model.canStopMovie)
+            Button("已检查机身") { confirmChecked = true }.disabled(model.movieBusy)
+        } else {
+            Button(model.movieBusy ? "准备录像…" : "录像", systemImage: "record.circle") { confirmStart = true }
+                .disabled(!model.canStartMovie)
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            HStack {
-                if model.movieMayBeActive {
-                    Button("停止录像", systemImage: "stop.circle") { confirmStop = true }
-                        .disabled(!model.canStopMovie)
-                    Button("已检查机身") { confirmChecked = true }.disabled(model.movieBusy)
-                } else {
-                    Button(model.movieBusy ? "准备录像…" : "录像", systemImage: "record.circle") { confirmStart = true }
-                        .disabled(!model.canStartMovie)
-                }
-            }.font(.caption).buttonStyle(.bordered).tint(model.movieMayBeActive ? .red : .yellow)
-            Text(model.movieMessage).font(.caption2).foregroundStyle(model.movieMayBeActive ? Color.orange : Color.gray)
-                .fixedSize(horizontal: false, vertical: true)
+            if compact {
+                VStack(alignment: .leading, spacing: 4) { buttons }
+                    .font(.caption2).buttonStyle(.bordered).tint(model.movieMayBeActive ? .red : .yellow)
+            } else {
+                HStack { buttons }
+                    .font(.caption).buttonStyle(.bordered).tint(model.movieMayBeActive ? .red : .yellow)
+            }
+            if !inline {
+                Text(model.movieMessage).font(.caption2).lineLimit(compact ? 4 : nil).foregroundStyle(model.movieMayBeActive ? Color.orange : Color.gray)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .confirmationDialog("开始录像到机身存储卡？", isPresented: $confirmStart, titleVisibility: .visible) {
             Button("确认开始") { Task { await model.startMovie() } }

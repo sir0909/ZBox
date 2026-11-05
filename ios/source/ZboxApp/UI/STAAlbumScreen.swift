@@ -39,7 +39,7 @@ struct STAAlbumScreen: View {
                 }
                 .disabled(model.albumBusy || !model.connectedSTA || model.liveViewBusy ||
                           model.batteryBusy || model.slotsBusy || model.exposureBusy ||
-                          model.monitorBusy || model.pairingBusy || model.pairingPrepared || model.captureBusy)
+                          model.monitorBusy || model.pairingBusy || model.pairingPrepared || model.captureBusy || model.focusBusy || model.movieBusy || model.movieMayBeActive)
                 if model.albumBusy {
                     Button("取消当前读取/下载", role: .cancel) { model.cancelAlbumWork() }
                     if let progress = model.albumProgress { ProgressView(value: progress) }
@@ -150,7 +150,7 @@ struct STAAlbumScreen: View {
                                 Button("下载") { selected = item; confirming = true }.font(.caption)
                             }
                             .buttonStyle(.borderless)
-                            .disabled(model.albumBusy || model.albumVerifyBusy || model.liveViewBusy || model.captureBusy || model.exposureBusy || model.batteryBusy || model.slotsBusy || model.monitorBusy || model.pairingBusy || model.pairingPrepared || model.phase != .connected)
+                            .disabled(model.albumBusy || model.albumVerifyBusy || model.liveViewBusy || model.captureBusy || model.focusBusy || model.movieBusy || model.movieMayBeActive || model.exposureBusy || model.batteryBusy || model.slotsBusy || model.monitorBusy || model.pairingBusy || model.pairingPrepared || model.phase != .connected)
                         }
                     }
                 }

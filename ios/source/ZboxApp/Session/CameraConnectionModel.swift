@@ -103,6 +103,8 @@ final class CameraConnectionModel: ObservableObject {
     @Published private(set) var liveViewJPEG: Data?
     @Published private(set) var liveViewFrames = 0
     @Published private(set) var previewOverlay: Data?
+    @Published private(set) var previewOverlayZebra = false
+    @Published private(set) var previewOverlayPeaking = false
     @Published private(set) var previewHistogram: [Int] = []
     @Published private(set) var previewHighlights = 0
     @Published private(set) var previewPixels = 0
@@ -178,6 +180,11 @@ final class CameraConnectionModel: ObservableObject {
         movieSupported = supportsMovie
         cameraGUID = cameraID
         phase = .connected
+    }
+    func connectForTesting(makeSession: @escaping @Sendable (String) async throws -> PtpIpSession) async {
+        let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host("127.0.0.1"), port: NWEndpoint.Port(rawValue: 15740)!)
+        await openSession(endpoint: endpoint, localAddress: nil, staMode: true, displayName: "fake",
+                          testConnector: { try await PtpIpConnector.connect(makeSession: makeSession) })
     }
     #endif
 
@@ -353,7 +360,8 @@ final class CameraConnectionModel: ObservableObject {
                           staMode: staMode ?? (localAddress != nil), displayName: host)
     }
 
-    private func openSession(endpoint: NWEndpoint, localAddress: String?, staMode: Bool, displayName: String) async {
+    private func openSession(endpoint: NWEndpoint, localAddress: String?, staMode: Bool, displayName: String,
+                             testConnector: (@Sendable () async throws -> PtpIpConnector.Connected)? = nil) async {
         guard appActive, phase == .idle, !connectingInFlight else { return }
         let attempt = UUID(); connectionID = attempt; connectingInFlight = true
         phase = .connecting
@@ -374,19 +382,24 @@ final class CameraConnectionModel: ObservableObject {
         log.add("连接 \(displayName)（\(staMode ? "相机加入网络" : "手机连相机热点")）")
         var opening: PtpIpSession?
         do {
-            let guid = try ClientIdentityStore.loadOrCreateGuid()
-            let connected = try await PtpIpConnector.connect { name in
-                let command = NetworkPtpIpChannel(endpoint: endpoint, localAddress: localAddress)
-                try await command.open(timeoutSeconds: 6)
-                return PtpIpSession(
-                    commandChannel: command,
-                    openEventChannel: {
-                        let event = NetworkPtpIpChannel(endpoint: endpoint, localAddress: localAddress)
-                        try await event.open(timeoutSeconds: 6)
-                        return event
-                    },
-                    config: PtpIpSessionConfig(initiatorGuid: guid, initiatorName: name, staMode: staMode)
-                )
+            let connected: PtpIpConnector.Connected
+            if let testConnector {
+                connected = try await testConnector()
+            } else {
+                let guid = try ClientIdentityStore.loadOrCreateGuid()
+                connected = try await PtpIpConnector.connect { name in
+                    let command = NetworkPtpIpChannel(endpoint: endpoint, localAddress: localAddress)
+                    try await command.open(timeoutSeconds: 6)
+                    return PtpIpSession(
+                        commandChannel: command,
+                        openEventChannel: {
+                            let event = NetworkPtpIpChannel(endpoint: endpoint, localAddress: localAddress)
+                            try await event.open(timeoutSeconds: 6)
+                            return event
+                        },
+                        config: PtpIpSessionConfig(initiatorGuid: guid, initiatorName: name, staMode: staMode)
+                    )
+                }
             }
             opening = connected.session
             guard appActive, phase == .connecting, connectionID == attempt else { await connected.session.close(); return }
@@ -619,6 +632,8 @@ final class CameraConnectionModel: ObservableObject {
             guard let active, self.session === active, self.analysisEpoch == epoch, self.liveViewPhase == .streaming,
                   let result else { return }
             self.previewOverlay = result.overlay
+            self.previewOverlayZebra = zebra
+            self.previewOverlayPeaking = peaking
             self.previewHistogram = result.histogram
             self.previewHighlights = result.highlights
             self.previewPixels = result.pixels

@@ -58,6 +58,7 @@ private actor FakeAppCommand: PtpIpByteChannel {
     let pauseOccurrence: Int
     private var inbox: [Data] = []
     private var ops: [UInt16] = []
+    private(set) var closed = false
     init(pausedOp: UInt16, pause: PausePoint, pauseOccurrence: Int) {
         self.pausedOp = pausedOp; self.pause = pause; self.pauseOccurrence = pauseOccurrence
     }
@@ -102,7 +103,7 @@ private actor FakeAppCommand: PtpIpByteChannel {
         }
     }
     func receive() async throws -> Data { inbox.isEmpty ? Data() : inbox.removeFirst() }
-    func close() async {}
+    func close() async { closed = true }
     func operations() -> [UInt16] { ops }
 }
 private actor FakeAppEvent: PtpIpByteChannel {
@@ -279,6 +280,8 @@ final class CameraLifecycleTests: XCTestCase {
         let start = Task { await model.startMovie() }
         await pause.untilEntered()
         XCTAssertTrue(model.movieMayBeActive)
+        let restored = CameraConnectionModel()
+        XCTAssertTrue(restored.movieMayBeActive)
         XCTAssertEqual(UserDefaults.standard.string(forKey: "camera.movie.mayBeActive.guid"), "test-camera-guid")
         model.appBecameInactive()
         await pause.release()
@@ -296,5 +299,44 @@ final class CameraLifecycleTests: XCTestCase {
         model.acknowledgeMovieStopped()
         XCTAssertFalse(model.movieMayBeActive)
         await model.disconnect()
+    }
+    func testInactiveDuringMoviePrerequisitesNeverStartsRecording() async throws {
+        UserDefaults.standard.removeObject(forKey: "camera.movie.mayBeActive.guid")
+        defer { UserDefaults.standard.removeObject(forKey: "camera.movie.mayBeActive.guid") }
+        let (model, command, pause) = try await makeModel(pausedOp: 0x1015, supportsMovie: true)
+        model.startLiveView()
+        for _ in 0..<200 {
+            if model.liveViewPhase == .streaming { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(model.canStartMovie)
+        let start = Task { await model.startMovie() }
+        await pause.untilEntered()
+        model.appBecameInactive()
+        await pause.release()
+        await start.value
+        try await awaitIdle(model)
+        let ops = await command.operations()
+        XCTAssertFalse(ops.contains(0x920a))
+        XCTAssertFalse(model.movieMayBeActive)
+        XCTAssertNil(UserDefaults.standard.string(forKey: "camera.movie.mayBeActive.guid"))
+        await model.disconnect()
+    }
+    func testInactiveDuringHandshakeCannotPublishOldConnection() async throws {
+        let pause = PausePoint(), command = FakeAppCommand(pausedOp: 0x1002, pause: pause, pauseOccurrence: 1)
+        let model = CameraConnectionModel()
+        let config = PtpIpSessionConfig(initiatorGuid: Data(repeating: 1, count: 16), initiatorName: "Test", staMode: true)
+        let session = PtpIpSession(commandChannel: command, openEventChannel: { FakeAppEvent() }, config: config, settle: { _ in })
+        let connecting = Task { await model.connectForTesting { _ in session } }
+        await pause.untilEntered()
+        model.appBecameInactive()
+        model.appBecameActive() // reactivation must not revive the old attempt
+        await pause.release()
+        await connecting.value
+        XCTAssertEqual(model.phase, .idle)
+        let ops = await command.operations()
+        XCTAssertFalse(ops.contains(0x1001))
+        let closed = await command.closed
+        XCTAssertTrue(closed)
     }
 }

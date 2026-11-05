@@ -102,7 +102,8 @@ struct LiveViewScreen: View {
     }
 
     private var landscapeLeftRail: some View {
-        VStack(spacing: 8) {
+        ScrollView {
+          VStack(spacing: 8) {
             Button { dismiss() } label: { Label("退出", systemImage: "chevron.left") }
             if model.liveViewPhase == .idle {
                 Button("开始取景") { model.startLiveView() }.disabled(!model.canStartLiveView)
@@ -110,23 +111,23 @@ struct LiveViewScreen: View {
                 Button("停取景") { Task { await model.stopLiveView() } }.disabled(model.liveViewPhase == .stopping)
             }
             Button("单次 AF") { Task { await model.autofocusOnce() } }.disabled(!model.canAutofocus)
+            MovieControls(model: model, compact: true)
             Spacer(minLength: 0)
             Text("LIVE · \(model.liveViewFrames)").font(.caption2.monospacedDigit())
-        }.font(.caption2).buttonStyle(.bordered).padding(6).frame(maxHeight: .infinity)
+          }.font(.caption2).buttonStyle(.bordered).padding(6).frame(maxWidth: .infinity)
+        }.frame(maxHeight: .infinity)
     }
     private var landscapeRightRail: some View {
-        ScrollView {
-            VStack(spacing: 8) {
-                NavigationLink { ExposureEditorScreen(model: model) } label: { Text("曝光") }
-                Button { confirmCapture = true } label: {
-                    Circle().stroke(.yellow, lineWidth: 3).frame(width: 44, height: 44)
-                        .overlay(Circle().fill(.yellow).frame(width: 30, height: 30))
-                }.disabled(!model.canCapture).accessibilityLabel("拍摄到机身存储卡")
-                NavigationLink { ExposureEditorScreen(model: model, menu: true) } label: { Text("i 菜单") }
-                MovieControls(model: model, compact: true)
-                Text(model.focusMessage).font(.caption2).foregroundStyle(.secondary)
-            }.font(.caption2).buttonStyle(.bordered).padding(6)
-        }
+        VStack(spacing: 0) {
+            NavigationLink { ExposureEditorScreen(model: model) } label: { Text("曝光").frame(minHeight: 38) }
+            Spacer(minLength: 4)
+            Button { confirmCapture = true } label: {
+                Circle().stroke(.yellow, lineWidth: 3).frame(width: 44, height: 44)
+                    .overlay(Circle().fill(.yellow).frame(width: 30, height: 30))
+            }.disabled(!model.canCapture).accessibilityLabel("拍摄到机身存储卡")
+            Spacer(minLength: 4)
+            NavigationLink { ExposureEditorScreen(model: model, menu: true) } label: { Text("i 菜单").frame(minHeight: 38) }
+        }.font(.caption2).buttonStyle(.bordered).padding(6).frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     var body: some View {

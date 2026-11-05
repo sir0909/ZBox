@@ -10,8 +10,9 @@ final class OrientationPolicyTests: XCTestCase {
         var error: String?
         policy.requestLandscape(in: window) { error = $0 }
         XCTAssertNotNil(error)
-        XCTAssertEqual(policy.supportedOrientations(for: window), .allButUpsideDown)
+        let expected: UIInterfaceOrientationMask = UIDevice.current.userInterfaceIdiom == .phone ? .portrait : .allButUpsideDown
+        XCTAssertEqual(policy.supportedOrientations(for: window), expected)
         policy.release(in: window, requestPortrait: false)
-        XCTAssertEqual(policy.supportedOrientations(for: window), .allButUpsideDown)
+        XCTAssertEqual(policy.supportedOrientations(for: window), expected)
     }
 }
