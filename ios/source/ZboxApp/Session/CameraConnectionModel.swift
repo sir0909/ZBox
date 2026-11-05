@@ -32,6 +32,13 @@ final class CameraConnectionModel: ObservableObject {
     @Published private(set) var slots: [PictureControlSlot] = []
     @Published private(set) var exposureBusy = false
     @Published private(set) var exposureRows: [DeviceRow] = []
+    @Published private(set) var connectedSTA = false
+    @Published private(set) var albumBusy = false
+    @Published private(set) var albumItems: [NikonSTAAlbumItem] = []
+    @Published private(set) var albumMessage = "手动读取相机相册（仅 STA）"
+    @Published private(set) var albumProgress: Double?
+    @Published private(set) var albumDownloadURL: URL?
+    private var albumCancelRequested = false
     @Published private(set) var clientName = PtpIpConnector.defaultPrimaryName
     enum LiveViewPhase: Equatable { case idle, starting, streaming, stopping }
     @Published private(set) var liveViewPhase: LiveViewPhase = .idle
@@ -41,7 +48,7 @@ final class CameraConnectionModel: ObservableObject {
     var liveViewBusy: Bool { liveViewPhase != .idle }
     var canStartLiveView: Bool {
         phase == .connected && !liveViewBusy && !batteryBusy && !monitorBusy &&
-        !slotsBusy && !exposureBusy && !pairingBusy && !pairingPrepared
+        !slotsBusy && !exposureBusy && !albumBusy && !pairingBusy && !pairingPrepared
     }
     @Published var manualHost = ""
     @Published private(set) var guidText = "加载中…"
@@ -161,6 +168,7 @@ final class CameraConnectionModel: ObservableObject {
         // iOS may suspend the app before cleanup finishes; camera state is not guaranteed.
         guard phase != .disconnecting else { return }
         phase = .disconnecting
+        albumCancelRequested = true
         let oldSession = session
         await stopLiveView()
         session = nil
@@ -171,6 +179,10 @@ final class CameraConnectionModel: ObservableObject {
         slotsBusy = false
         exposureBusy = false
         exposureRows = []
+        connectedSTA = false
+        albumBusy = false
+        albumItems = []
+        albumProgress = nil
         liveViewStopRequested = true
         liveViewPhase = .idle
         liveViewJPEG = nil
@@ -243,6 +255,7 @@ final class CameraConnectionModel: ObservableObject {
             ]
             log.add("设备信息已读取：Nikon \(NikonConnectionPolicy.normalizedModel(device.model))，操作数 \(device.operations.count)")
             phase = .connected
+            connectedSTA = staMode
             statusMessage = "已连接 \(NikonConnectionPolicy.normalizedModel(device.model))"
             startMonitor(for: connected.session)
         } catch PtpIpSessionError.initFailed(let reason) where reason == PtpIpInitFailReason.rejected.rawValue {
@@ -370,6 +383,10 @@ final class CameraConnectionModel: ObservableObject {
             slotsBusy = false
             exposureBusy = false
             exposureRows = []
+            connectedSTA = false
+            albumBusy = false
+            albumItems = []
+            albumProgress = nil
             pairingBusy = false
             pairingPrepared = false
             pairingPIN = nil
@@ -397,7 +414,7 @@ final class CameraConnectionModel: ObservableObject {
 
     private func probeIfIdle(_ active: PtpIpSession) async {
         guard session === active, phase == .connected, !batteryBusy, !pairingBusy,
-              !pairingPrepared, !slotsBusy, !monitorBusy, !exposureBusy, !liveViewBusy else { return }
+              !pairingPrepared, !slotsBusy, !monitorBusy, !exposureBusy, !albumBusy, !liveViewBusy else { return }
         monitorBusy = true
         do {
             try await active.probeConnection()
@@ -415,7 +432,7 @@ final class CameraConnectionModel: ObservableObject {
 
     func refreshSlots() async {
         guard let active = session, phase == .connected, !slotsBusy, !batteryBusy,
-              !monitorBusy, !pairingBusy, !pairingPrepared, !exposureBusy, !liveViewBusy else { return }
+              !monitorBusy, !pairingBusy, !pairingPrepared, !exposureBusy, !albumBusy, !liveViewBusy else { return }
         slotsBusy = true
         slots = []
         defer { if session === active { slotsBusy = false } }
@@ -434,11 +451,117 @@ final class CameraConnectionModel: ObservableObject {
         log.add("C-1…C-9 只读扫描结束，未修改相机数据")
     }
 
+    // MARK: - Explicit Nikon STA album (read-only)
+
+    func cancelAlbumWork() {
+        if albumBusy { albumCancelRequested = true; albumMessage = "正在取消；等待当前命令完成…" }
+    }
+
+    func loadSTAAlbum() async {
+        guard let active = session, phase == .connected, connectedSTA, !albumBusy,
+              !liveViewBusy, !batteryBusy, !slotsBusy, !monitorBusy, !exposureBusy,
+              !pairingBusy, !pairingPrepared else { return }
+        albumBusy = true
+        albumCancelRequested = false
+        albumItems = []
+        albumMessage = "正在读取存储和元数据…"
+        defer { if session === active { albumBusy = false } }
+        do {
+            let ids = try await active.fetchStorageIDsForAlbum()
+            var items: [NikonSTAAlbumItem] = []
+            for id in ids {
+                guard session === active, phase == .connected, !albumCancelRequested else { throw CancellationError() }
+                items += try await active.fetchNikonSTAMetadata(storageID: id)
+            }
+            guard session === active, phase == .connected, !albumCancelRequested else { throw CancellationError() }
+            items.sort { ($0.capturedAt ?? "") > ($1.capturedAt ?? "") }
+            albumItems = Array(items.prefix(500))
+            albumMessage = items.count > 500 ? "共 \(items.count) 项，仅展示前 500 项" : "读取到 \(items.count) 项（文件名为占位名）"
+            log.add("STA 相册元数据读取完成，未修改相机文件")
+        } catch is CancellationError {
+            if session === active { albumMessage = "已取消相册读取" }
+        } catch PtpIpSessionError.operationFailed(let code, let op) {
+            if session === active { albumMessage = String(format: "相机拒绝读取：0x%04X 返回 0x%04X", op, code) }
+        } catch {
+            guard session === active, phase == .connected else { return }
+            albumMessage = "相册读取异常，连接已关闭：\(describe(error))"
+            await disconnect(reason: albumMessage)
+        }
+    }
+
+    func downloadSTAItem(_ item: NikonSTAAlbumItem) async {
+        guard let active = session, phase == .connected, connectedSTA, !albumBusy,
+              !liveViewBusy, !batteryBusy, !slotsBusy, !monitorBusy, !exposureBusy,
+              !pairingBusy, !pairingPrepared, albumItems.contains(item) else { return }
+        albumBusy = true
+        albumCancelRequested = false
+        albumProgress = 0
+        albumDownloadURL = nil
+        albumMessage = "正在读取文件大小…"
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ZBox-" + UUID().uuidString, isDirectory: true)
+        let partial = dir.appendingPathComponent("partial")
+        let completed = dir.appendingPathComponent(item.placeholderName)
+        var finished = false
+        defer {
+            if !finished { try? FileManager.default.removeItem(at: dir) }
+            if session === active { albumBusy = false; albumProgress = nil }
+        }
+        do {
+            let size = try await active.fetchNikonSTAObjectSize(handle: item.handle)
+            guard session === active, phase == .connected, !albumCancelRequested else { throw CancellationError() }
+            // Bound disk use. 0x9434 metadata size is deliberately not used here.
+            guard size > 0, size <= 32 * 1024 * 1024 * 1024 else {
+                albumMessage = "文件大小为零或超过 32 GiB 安全上限"; return
+            }
+            let values = try? FileManager.default.temporaryDirectory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+            if let free = values?.volumeAvailableCapacityForImportantUsage,
+               free >= 0, UInt64(free) < size + 8 * 1024 * 1024 {
+                albumMessage = "设备可用空间不足"; return
+            }
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            guard FileManager.default.createFile(atPath: partial.path, contents: nil) else {
+                throw CocoaError(.fileWriteUnknown)
+            }
+            let writer = try FileHandle(forWritingTo: partial)
+            defer { try? writer.close() }
+            var offset: UInt64 = 0
+            while offset < size {
+                guard session === active, phase == .connected, !albumCancelRequested else { throw CancellationError() }
+                let wanted = Int(min(UInt64(512 * 1024), size - offset))
+                let bytes = try await active.fetchNikonSTAPartial(handle: item.handle, offset: offset, length: wanted)
+                guard session === active, phase == .connected, !albumCancelRequested else { throw CancellationError() }
+                try writer.write(contentsOf: bytes)
+                offset += UInt64(bytes.count)
+                albumProgress = Double(offset) / Double(size)
+                albumMessage = "下载中：\(offset) / \(size) 字节"
+            }
+            try writer.close()
+            let actual = try FileManager.default.attributesOfItem(atPath: partial.path)[.size] as? NSNumber
+            guard actual?.uint64Value == size else {
+                throw PtpIpSessionError.malformed(stage: "STA 相册", detail: "保存文件长度不匹配")
+            }
+            try FileManager.default.moveItem(at: partial, to: completed)
+            finished = true
+            albumDownloadURL = completed
+            albumMessage = "下载完成；请使用分享保存。名称为占位名，临时文件可能被系统清理。"
+            log.add("STA 相册原文件下载完成，长度已核对；未验证文件内容")
+        } catch is CancellationError {
+            if session === active { albumMessage = "下载已取消；不完整文件已删除" }
+        } catch PtpIpSessionError.operationFailed(let code, let op) {
+            if session === active { albumMessage = String(format: "相机拒绝下载：0x%04X 返回 0x%04X", op, code) }
+        } catch {
+            guard session === active, phase == .connected else { return }
+            albumMessage = "下载异常，不完整文件已删除：\(describe(error))"
+            // A size-limit or transport error can leave a partial PTP transaction on the wire.
+            await disconnect(reason: albumMessage)
+        }
+    }
+
     // MARK: - Read-only exposure values (never write camera settings)
 
     func refreshExposure() async {
         guard let active = session, phase == .connected, !exposureBusy, !batteryBusy,
-              !slotsBusy, !monitorBusy, !pairingBusy, !pairingPrepared, !liveViewBusy else { return }
+              !slotsBusy, !monitorBusy, !pairingBusy, !pairingPrepared, !albumBusy, !liveViewBusy else { return }
         exposureBusy = true
         exposureRows = []
         defer { if session === active { exposureBusy = false } }
@@ -460,7 +583,7 @@ final class CameraConnectionModel: ObservableObject {
     // MARK: - Read-only battery
 
     func refreshBattery() async {
-        guard let active = session, phase == .connected, !batteryBusy, !pairingPrepared, !pairingBusy, !monitorBusy, !slotsBusy, !exposureBusy, !liveViewBusy else { return }
+        guard let active = session, phase == .connected, !batteryBusy, !pairingPrepared, !pairingBusy, !monitorBusy, !slotsBusy, !exposureBusy, !albumBusy, !liveViewBusy else { return }
         batteryBusy = true
         defer { if session === active { batteryBusy = false } }
         do {
@@ -485,7 +608,7 @@ final class CameraConnectionModel: ObservableObject {
     // MARK: - Nikon host registration
 
     func prepareRegistration() async {
-        guard let session, phase == .connected, !batteryBusy, !pairingBusy, !monitorBusy, !slotsBusy, !exposureBusy, !liveViewBusy else { return }
+        guard let session, phase == .connected, !batteryBusy, !pairingBusy, !monitorBusy, !slotsBusy, !exposureBusy, !albumBusy, !liveViewBusy else { return }
         pairingBusy = true
         defer { if self.session === session { pairingBusy = false } }
         do {
@@ -508,7 +631,7 @@ final class CameraConnectionModel: ObservableObject {
     }
 
     func confirmRegistration() async {
-        guard let session, phase == .connected, !batteryBusy, !pairingBusy, !monitorBusy, !slotsBusy, !exposureBusy, !liveViewBusy else { return }
+        guard let session, phase == .connected, !batteryBusy, !pairingBusy, !monitorBusy, !slotsBusy, !exposureBusy, !albumBusy, !liveViewBusy else { return }
         pairingBusy = true
         defer { if self.session === session { pairingBusy = false } }
         do {
