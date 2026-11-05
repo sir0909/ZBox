@@ -13,8 +13,9 @@ struct ExposureEditorScreen: View {
     @State private var desired: Data?
     @State private var confirmation = false
 
-    private func label(_ bytes: Data, property: ExposureProperty) -> String {
-        property.displayValue(bytes) ?? bytes.map { String(format: "%02X", $0) }.joined(separator: " ")
+    private func label(_ bytes: Data, property: ExposureProperty, type: UInt16) -> String {
+        if type == 0xffff { return ExposureDescriptor.ptpString(bytes) ?? "格式未知" }
+        return property.displayValue(bytes) ?? bytes.map { String(format: "%02X", $0) }.joined(separator: " ")
     }
 
     var body: some View {
@@ -38,14 +39,14 @@ struct ExposureEditorScreen: View {
             }
             if let d = model.exposureDescriptor, d.property == property {
                 Section("相机允许的值") {
-                    LabeledContent("当前值", value: label(d.current, property: property))
+                    LabeledContent("当前值", value: label(d.current, property: property, type: d.type))
                     ForEach(d.choices, id: \.self) { bytes in
                         Button {
                             desired = bytes
                             confirmation = true
                         } label: {
                             HStack {
-                                Text(label(bytes, property: property))
+                                Text(label(bytes, property: property, type: d.type))
                                 Spacer()
                                 if bytes == d.current { Text("当前").foregroundStyle(.secondary) }
                             }

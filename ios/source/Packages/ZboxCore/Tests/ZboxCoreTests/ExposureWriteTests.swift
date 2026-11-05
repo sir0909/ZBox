@@ -47,6 +47,36 @@ private actor ExposureCamera: PtpIpByteChannel {
     func snapshot() -> (Int, [Data]) { (writes, packets) }
 }
 
+private actor StringMenuCamera: PtpIpByteChannel {
+    private let fallback = FakeCamera.command()
+    private var inbox: [Data] = []
+    private var current = ptpString("6000x4000")
+    private var writes = 0
+    func send(_ data: Data) async throws {
+        let type = data.readLE(UInt32.self, at: 4)
+        if type == PtpIpPacketType.operationRequest.rawValue {
+            let op = data.readLE(UInt16.self, at: 12), tx = data.readLE(UInt32.self, at: 14)
+            if op == PtpOpCode.getDevicePropDesc {
+                let values = [ptpString("6000x4000"), ptpString("3000x2000")]
+                let desc = le(ExposureProperty.imageSize.rawValue) + le(UInt16(0xffff)) + Data([1]) + values[0] + current + Data([2]) + le(UInt16(2)) + values[0] + values[1]
+                inbox += dataIn(tx, desc) + [opResponse(PtpResponseCode.ok, tx)]; return
+            }
+            if op == PtpOpCode.getDevicePropValue {
+                inbox += dataIn(tx, current) + [opResponse(PtpResponseCode.ok, tx)]; return
+            }
+            if op == PtpOpCode.setDevicePropValue { writes += 1; return }
+        } else if type == PtpIpPacketType.endData.rawValue {
+            let tx = data.readLE(UInt32.self, at: 8)
+            current = data.slice(at: 12, count: data.count - 12)
+            inbox.append(opResponse(PtpResponseCode.ok, tx)); return
+        } else if type == PtpIpPacketType.startData.rawValue { return }
+        inbox += fallback(data)
+    }
+    func receive() async throws -> Data { inbox.isEmpty ? Data() : inbox.removeFirst() }
+    func close() async {}
+    func writeCount() -> Int { writes }
+}
+
 final class ExposureWriteTests: XCTestCase {
     private func makeSession(_ channel: ExposureCamera) async throws -> PtpIpSession {
         let s = PtpIpSession(commandChannel: channel, openEventChannel: { ScriptedChannel(FakeCamera.event) },
@@ -74,6 +104,29 @@ final class ExposureWriteTests: XCTestCase {
         XCTAssertEqual(ExposureProperty.quality.displayValue(Data([4])), "0x04")
         let stringDesc = le(ExposureProperty.imageSize.rawValue) + le(UInt16(0xffff)) + Data([1, 0, 0, 0])
         XCTAssertThrowsError(try ExposureDescriptor.parse(stringDesc, property: .imageSize))
+    }
+    func testStringMenuEnumerationAndStrictValidation() throws {
+        let first = ptpString("6000x4000"), second = ptpString("3000x2000")
+        let desc = le(ExposureProperty.imageSize.rawValue) + le(UInt16(0xffff)) + Data([1]) + first + first + Data([2]) + le(UInt16(2)) + first + second
+        let parsed = try ExposureDescriptor.parse(desc, property: .imageSize)
+        XCTAssertEqual(parsed.type, 0xffff)
+        XCTAssertEqual(parsed.choices, [first, second])
+        XCTAssertEqual(ExposureDescriptor.ptpString(second), "3000x2000")
+        XCTAssertEqual(ExposureDescriptor.ptpString(Data([0])), "")
+        XCTAssertNil(ExposureDescriptor.ptpString(Data([1, 1, 0])))
+        XCTAssertNil(ExposureDescriptor.ptpString(Data([2, 0x00, 0xd8, 0, 0])))
+        XCTAssertThrowsError(try ExposureDescriptor.parse(desc.dropLast(), property: .imageSize))
+    }
+    func testStringMenuWriteIsVerifiedWithoutTruncation() async throws {
+        let camera = StringMenuCamera()
+        let s = PtpIpSession(commandChannel: camera, openEventChannel: { ScriptedChannel(FakeCamera.event) },
+                             config: testConfig(), settle: { _ in })
+        _ = try await s.connect()
+        let result = try await s.writeExposureOnce(property: .imageSize, expectedType: 0xffff,
+            expectedCurrent: ptpString("6000x4000"), desired: ptpString("3000x2000"), shouldContinue: { true })
+        XCTAssertEqual(result, .verified)
+        let writes = await camera.writeCount()
+        XCTAssertEqual(writes, 1)
     }
     func testChangedDescriptorTypeIsNeverWritten() async throws {
         let camera = ExposureCamera(), s = try await makeSession(camera)

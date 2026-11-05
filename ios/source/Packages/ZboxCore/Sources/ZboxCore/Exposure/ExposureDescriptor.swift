@@ -14,6 +14,31 @@ public struct ExposureDescriptor: Equatable, Sendable {
         let type = data.readLE(UInt16.self, at: 2)
         let expectedType: UInt16 = property == .compensation ? 0x0003 : (property == .nikonShutter ? 0x0006 : 0x0004)
         guard data[data.startIndex + 4] <= 1 else { throw fail() }
+        if property.isMenuScalar, type == 0xffff {
+            var offset = 5
+            func readString() throws -> Data {
+                guard offset < data.count else { throw fail() }
+                let count = Int(data[data.startIndex + offset])
+                guard count <= 128, offset + 1 + count * 2 <= data.count else { throw fail() }
+                let value = data.slice(at: offset, count: 1 + count * 2)
+                offset += 1 + count * 2
+                guard Self.ptpString(value) != nil else { throw fail() }
+                return value
+            }
+            _ = try readString() // factory default
+            let current = try readString()
+            guard offset + 3 <= data.count, data[data.startIndex + offset] == 2 else { throw fail() }
+            let count = Int(data.readLE(UInt16.self, at: offset + 1)); offset += 3
+            guard (1...128).contains(count) else { throw fail() }
+            var choices: [Data] = []
+            for _ in 0..<count {
+                let value = try readString()
+                if !choices.contains(value) { choices.append(value) }
+            }
+            guard offset == data.count, !choices.isEmpty else { throw fail() }
+            return ExposureDescriptor(property: property, type: type, writable: data[data.startIndex + 4] == 1,
+                                      current: current, choices: choices)
+        }
         if property.isMenuScalar {
             guard (1...6).contains(type) else { throw fail() }
         } else {
@@ -56,6 +81,21 @@ public struct ExposureDescriptor: Equatable, Sendable {
         return ExposureDescriptor(property: property, type: type, writable: data[data.startIndex + 4] == 1,
                                   current: current, choices: choices)
     }
+    /// Strict PTP UTF-16LE string decoding; unknown or malformed text is not writable.
+    public static func ptpString(_ data: Data) -> String? {
+        guard let first = data.first else { return nil }
+        let count = Int(first)
+        guard count <= 128, data.count == 1 + count * 2 else { return nil }
+        if count == 0 { return "" }
+        var units: [UInt16] = []
+        for index in 0..<count { units.append(data.readLE(UInt16.self, at: 1 + index * 2)) }
+        guard units.last == 0, !units.dropLast().contains(0) else { return nil }
+        units.removeLast()
+        let string = String(decoding: units, as: UTF16.self)
+        guard Array(string.utf16) == units else { return nil }
+        return string
+    }
+
 }
 
 public enum ExposureWriteResult: Equatable, Sendable {
