@@ -58,7 +58,10 @@ private actor StringMenuCamera: PtpIpByteChannel {
             let op = data.readLE(UInt16.self, at: 12), tx = data.readLE(UInt32.self, at: 14)
             if op == PtpOpCode.getDevicePropDesc {
                 let values = [ptpString("6000x4000"), ptpString("3000x2000")]
-                let desc = le(ExposureProperty.imageSize.rawValue) + le(UInt16(0xffff)) + Data([1]) + values[0] + current + Data([2]) + le(UInt16(2)) + values[0] + values[1]
+                var desc = le(ExposureProperty.imageSize.rawValue)
+                desc += le(UInt16(0xffff)); desc += Data([1]); desc += values[0]
+                desc += current; desc += Data([2]); desc += le(UInt16(2))
+                desc += values[0]; desc += values[1]
                 inbox += dataIn(tx, desc) + [opResponse(PtpResponseCode.ok, tx)]; return
             }
             if op == PtpOpCode.getDevicePropValue {
@@ -107,7 +110,9 @@ final class ExposureWriteTests: XCTestCase {
     }
     func testStringMenuEnumerationAndStrictValidation() throws {
         let first = ptpString("6000x4000"), second = ptpString("3000x2000")
-        let desc = le(ExposureProperty.imageSize.rawValue) + le(UInt16(0xffff)) + Data([1]) + first + first + Data([2]) + le(UInt16(2)) + first + second
+        var desc = le(ExposureProperty.imageSize.rawValue)
+        desc += le(UInt16(0xffff)); desc += Data([1]); desc += first; desc += first
+        desc += Data([2]); desc += le(UInt16(2)); desc += first; desc += second
         let parsed = try ExposureDescriptor.parse(desc, property: .imageSize)
         XCTAssertEqual(parsed.type, 0xffff)
         XCTAssertEqual(parsed.choices, [first, second])
