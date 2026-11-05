@@ -19,6 +19,7 @@ public enum PtpOpCode {
     public static let getObject: UInt16 = 0x1009
     public static let getThumb: UInt16 = 0x100A
     public static let initiateCapture: UInt16 = 0x100E
+    public static let getDevicePropDesc: UInt16 = 0x1014
     public static let getDevicePropValue: UInt16 = 0x1015
     public static let setDevicePropValue: UInt16 = 0x1016
     public static let nikonObjectSize: UInt16 = 0x9421

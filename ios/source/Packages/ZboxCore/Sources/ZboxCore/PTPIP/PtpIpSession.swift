@@ -56,6 +56,7 @@ public actor PtpIpSession {
     private let lock = PtpIpAsyncLock()
 
     private var transactionId: UInt32 = 0
+    private var sessionGeneration: UInt64 = 0
     private var pairingPreparedAtMs: Int64?
 
     public private(set) var connectionInfo: PtpIpConnectionInfo?
@@ -86,6 +87,7 @@ public actor PtpIpSession {
 
     /// 完成握手并打开 PTP 会话。失败时自动关闭两条通道,不做任何自动重试。
     public func connect() async throws -> PtpIpConnectionInfo {
+        sessionGeneration &+= 1
         do {
             let info = try await performHandshake()
             connectionInfo = info
@@ -268,6 +270,66 @@ public actor PtpIpSession {
         return result.data
     }
 
+    /// Descriptor fetch is read-only. Unsupported forms are deliberately rejected.
+    public func fetchExposureDescriptor(_ property: ExposureProperty) async throws -> ExposureDescriptor {
+        let result = try await execute(opCode: PtpOpCode.getDevicePropDesc, params: [UInt32(property.rawValue)],
+                                       expectData: true, timeoutSeconds: 6, maxDataBytes: 4096)
+        guard result.response.isOK else {
+            throw PtpIpSessionError.operationFailed(code: result.response.code, opCode: PtpOpCode.getDevicePropDesc)
+        }
+        return try ExposureDescriptor.parse(result.data, property: property)
+    }
+
+    /// One explicit, serialized write, with a fresh descriptor and before/after readback.
+    /// No retries. Transport failure after write begins means the camera state is unknown.
+    public func writeExposureOnce(property: ExposureProperty, expectedCurrent: Data, desired: Data,
+                                  shouldContinue: @escaping @Sendable () async -> Bool) async throws -> ExposureWriteResult {
+        guard connectionInfo != nil else { throw PtpIpSessionError.notConnected }
+        let generation = sessionGeneration
+        do {
+            return try await lock.withLock { [self] in
+                try await self.performExposureWrite(property: property, expectedCurrent: expectedCurrent,
+                                                    desired: desired, generation: generation, shouldContinue: shouldContinue)
+            }
+        } catch PtpIpSessionError.timeout(let stage) {
+            await close(); throw PtpIpSessionError.timeout(stage: stage)
+        } catch PtpIpSessionError.dataLimitExceeded(let limit) {
+            await close(); throw PtpIpSessionError.dataLimitExceeded(limit: limit)
+        }
+    }
+
+    private func performExposureWrite(property: ExposureProperty, expectedCurrent: Data, desired: Data,
+                                      generation: UInt64, shouldContinue: @Sendable () async -> Bool) async throws -> ExposureWriteResult {
+        func ensureCurrent() throws {
+            guard connectionInfo != nil, sessionGeneration == generation else { throw PtpIpSessionError.notConnected }
+        }
+        try ensureCurrent()
+        let code = UInt32(property.rawValue)
+        let desc = try await runOperation(opCode: PtpOpCode.getDevicePropDesc, params: [code], expectData: true,
+                                          timeout: 6, maxDataBytes: 4096)
+        try ensureCurrent()
+        guard desc.response.isOK else { throw PtpIpSessionError.operationFailed(code: desc.response.code, opCode: PtpOpCode.getDevicePropDesc) }
+        let parsed = try ExposureDescriptor.parse(desc.data, property: property)
+        guard parsed.writable, parsed.choices.contains(desired) else { throw ExposureWriteError.notWritableOrValueNotAllowed }
+        let before = try await runOperation(opCode: PtpOpCode.getDevicePropValue, params: [code], expectData: true,
+                                            timeout: 6, maxDataBytes: 4)
+        try ensureCurrent()
+        guard before.response.isOK else { throw PtpIpSessionError.operationFailed(code: before.response.code, opCode: PtpOpCode.getDevicePropValue) }
+        guard before.data == expectedCurrent else { throw ExposureWriteError.staleCurrentValue }
+        if before.data == desired { return .alreadyCurrent }
+        guard await shouldContinue() else { throw ExposureWriteError.cancelledBeforeWrite }
+        try ensureCurrent()
+        let written = try await runOperation(opCode: PtpOpCode.setDevicePropValue, params: [code], expectData: false,
+                                             timeout: 6, maxDataBytes: 0, dataOut: desired)
+        try ensureCurrent()
+        guard written.response.isOK else { throw PtpIpSessionError.operationFailed(code: written.response.code, opCode: PtpOpCode.setDevicePropValue) }
+        let after = try await runOperation(opCode: PtpOpCode.getDevicePropValue, params: [code], expectData: true,
+                                           timeout: 6, maxDataBytes: 4)
+        try ensureCurrent()
+        guard after.response.isOK, after.data == desired else { throw ExposureWriteError.readbackMismatch }
+        return .verified
+    }
+
     /// Read one known exposure value; non-OK responses remain unavailable, not defaults.
     public func fetchExposure(_ property: ExposureProperty) async throws -> String? {
         let result = try await execute(opCode: PtpOpCode.getDevicePropValue,
@@ -327,19 +389,28 @@ public actor PtpIpSession {
         params: [UInt32],
         expectData: Bool,
         timeout: Double,
-        maxDataBytes: Int = 32 * 1024 * 1024
+        maxDataBytes: Int = 32 * 1024 * 1024,
+        dataOut: Data? = nil
     ) async throws -> PtpOperationResult {
         transactionId &+= 1
         let tx = transactionId
         let stream = command
-        try await stream.send(
-            PtpIpCodec.operationRequest(
-                dataPhase: PtpIpOperationParser.dataPhaseNoneOrIn,
-                opCode: opCode,
-                transactionId: tx,
-                params: params
-            )
+        let request = PtpIpCodec.operationRequest(
+            dataPhase: dataOut == nil ? PtpIpOperationParser.dataPhaseNoneOrIn : 2,
+            opCode: opCode, transactionId: tx, params: params
         )
+        try await withPtpIpTimeout(stage: "发送命令", seconds: timeout, onTimeout: { [self] in await self.close() }) {
+            try await stream.send(request)
+        }
+        if let dataOut {
+            var start = Data(); start.appendLE(tx); start.appendLE(UInt64(dataOut.count))
+            var end = Data(); end.appendLE(tx); end.append(dataOut)
+            for packet in [PtpIpCodec.frame(.startData, payload: start), PtpIpCodec.frame(.endData, payload: end)] {
+                try await withPtpIpTimeout(stage: "写入数据", seconds: timeout, onTimeout: { [self] in await self.close() }) {
+                    try await stream.send(packet)
+                }
+            }
+        }
         var data = Data()
         while true {
             let packet = try await readPacket(stream, stage: "命令", timeout: timeout)
@@ -415,6 +486,7 @@ public actor PtpIpSession {
     // MARK: - Lifecycle
 
     public func close() async {
+        sessionGeneration &+= 1
         await closeChannels()
         connectionInfo = nil
         deviceInfo = nil
