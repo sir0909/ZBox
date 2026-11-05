@@ -56,6 +56,14 @@ private actor FakeAppCommand: PtpIpByteChannel {
             ops.append(op)
             if op == 0x1004 {
                 inbox.append(contentsOf: input(tx, little(UInt32(1)) + little(UInt32(0x10001))))
+            } else if op == 0x9434 {
+                var metadata = little(UInt32(1)) + little(UInt32(1)) + little(UInt32(0x29000042))
+                metadata += little(UInt32(0)) + Data([0, 3, 4, 5, 2, 1]) + little(UInt16(2025))
+                inbox.append(contentsOf: input(tx, metadata))
+            } else if op == 0x9421 {
+                inbox.append(contentsOf: input(tx, little(UInt64(7))))
+            } else if op == 0x9431 {
+                inbox.append(contentsOf: input(tx, Data([0, 1, 2, 3, 4, 5, 6])))
             } else if op == 0x1014 {
                 var descriptor = little(UInt16(0x500f)) + little(UInt16(4)) + Data([1])
                 descriptor += little(UInt16(400)) + little(UInt16(400)) + Data([2]) + little(UInt16(2))
@@ -181,5 +189,37 @@ final class CameraLifecycleTests: XCTestCase {
         let afterActive = await command.operations()
         XCTAssertTrue(afterActive.contains(0x1015))
         await model.disconnect()
+    }
+    func testInactiveDuringPartialDownloadDeletesIncompleteFile() async throws {
+        let (model, command, pause) = try await makeModel(pausedOp: 0x9431)
+        await model.loadSTAAlbum()
+        let item = try XCTUnwrap(model.albumItems.first)
+        let temp = FileManager.default.temporaryDirectory
+        let before = Set(try FileManager.default.contentsOfDirectory(atPath: temp.path).filter { $0.hasPrefix("ZBox-") })
+        let download = Task { await model.downloadSTAItem(item) }
+        await pause.untilEntered()
+        model.appBecameInactive()
+        await pause.release()
+        await download.value
+        XCTAssertFalse(model.albumBusy)
+        XCTAssertNil(model.albumDownloadURL)
+        XCTAssertEqual(model.albumMessage, "下载已取消；不完整文件已删除")
+        let after = Set(try FileManager.default.contentsOfDirectory(atPath: temp.path).filter { $0.hasPrefix("ZBox-") })
+        XCTAssertTrue(after.subtracting(before).isEmpty)
+        let ops = await command.operations()
+        XCTAssertTrue(ops.contains(0x9431))
+        await model.disconnect()
+    }
+    func testDisconnectDuringAlbumReadDoesNotPublishStaleResults() async throws {
+        let (model, command, pause) = try await makeModel(pausedOp: 0x1004)
+        let loading = Task { await model.loadSTAAlbum() }
+        await pause.untilEntered()
+        await model.disconnect()
+        await pause.release()
+        await loading.value
+        XCTAssertEqual(model.phase, .idle)
+        XCTAssertTrue(model.albumItems.isEmpty)
+        let ops = await command.operations()
+        XCTAssertFalse(ops.contains(0x9434))
     }
 }
