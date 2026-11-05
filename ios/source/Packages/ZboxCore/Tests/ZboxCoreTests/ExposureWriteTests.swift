@@ -65,9 +65,28 @@ final class ExposureWriteTests: XCTestCase {
         XCTAssertThrowsError(try ExposureDescriptor.parse(descriptor().dropLast(), property: .iso))
         XCTAssertThrowsError(try ExposureDescriptor.parse(descriptor(), property: .compensation))
     }
+    func testMenuScalarDescriptorAndUnknownType() throws {
+        let quality = le(ExposureProperty.quality.rawValue) + le(UInt16(2)) + Data([1, 0, 2, 2]) + le(UInt16(3)) + Data([0, 2, 4])
+        let d = try ExposureDescriptor.parse(quality, property: .quality)
+        XCTAssertEqual(d.type, 2)
+        XCTAssertEqual(d.current, Data([2]))
+        XCTAssertEqual(d.choices, [Data([0]), Data([2]), Data([4])])
+        XCTAssertEqual(ExposureProperty.quality.displayValue(Data([4])), "0x04")
+        let stringDesc = le(ExposureProperty.imageSize.rawValue) + le(UInt16(0xffff)) + Data([1, 0, 0, 0])
+        XCTAssertThrowsError(try ExposureDescriptor.parse(stringDesc, property: .imageSize))
+    }
+    func testChangedDescriptorTypeIsNeverWritten() async throws {
+        let camera = ExposureCamera(), s = try await makeSession(camera)
+        do {
+            _ = try await s.writeExposureOnce(property: .iso, expectedType: 3,
+                expectedCurrent: le(UInt16(400)), desired: le(UInt16(800)), shouldContinue: { true })
+            XCTFail("type change must block write")
+        } catch ExposureWriteError.notWritableOrValueNotAllowed {}
+        let (writes, _) = await camera.snapshot(); XCTAssertEqual(writes, 0)
+    }
     func testSuccessfulWriteSendsCorrectFramesAndVerifiesReadback() async throws {
         let camera = ExposureCamera(), s = try await makeSession(camera)
-        let result = try await s.writeExposureOnce(property: .iso, expectedCurrent: le(UInt16(400)), desired: le(UInt16(800)), shouldContinue: { true })
+        let result = try await s.writeExposureOnce(property: .iso, expectedType: 4, expectedCurrent: le(UInt16(400)), desired: le(UInt16(800)), shouldContinue: { true })
         XCTAssertEqual(result, .verified)
         let (writes, packets) = await camera.snapshot(); XCTAssertEqual(writes, 1)
         let req = try XCTUnwrap(packets.first { $0.readLE(UInt32.self, at: 4) == PtpIpPacketType.operationRequest.rawValue && $0.readLE(UInt16.self, at: 12) == PtpOpCode.setDevicePropValue })
@@ -82,7 +101,7 @@ final class ExposureWriteTests: XCTestCase {
         for scenario in 0...2 {
             let camera = ExposureCamera(writable: scenario != 0), s = try await makeSession(camera)
             do {
-                _ = try await s.writeExposureOnce(property: .iso,
+                _ = try await s.writeExposureOnce(property: .iso, expectedType: 4,
                     expectedCurrent: le(UInt16(scenario == 1 ? 200 : 400)), desired: le(UInt16(800)),
                     shouldContinue: { scenario != 2 })
                 XCTFail("write should have been blocked")
@@ -95,7 +114,7 @@ final class ExposureWriteTests: XCTestCase {
     func testMismatchCannotBeReportedAsVerified() async throws {
         let camera = ExposureCamera(mutate: false), s = try await makeSession(camera)
         do {
-            _ = try await s.writeExposureOnce(property: .iso, expectedCurrent: le(UInt16(400)), desired: le(UInt16(800)), shouldContinue: { true })
+            _ = try await s.writeExposureOnce(property: .iso, expectedType: 4, expectedCurrent: le(UInt16(400)), desired: le(UInt16(800)), shouldContinue: { true })
             XCTFail("mismatched readback")
         } catch ExposureWriteError.readbackMismatch {}
         let (writes, _) = await camera.snapshot(); XCTAssertEqual(writes, 1)

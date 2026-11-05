@@ -282,13 +282,13 @@ public actor PtpIpSession {
 
     /// One explicit, serialized write, with a fresh descriptor and before/after readback.
     /// No retries. Transport failure after write begins means the camera state is unknown.
-    public func writeExposureOnce(property: ExposureProperty, expectedCurrent: Data, desired: Data,
+    public func writeExposureOnce(property: ExposureProperty, expectedType: UInt16, expectedCurrent: Data, desired: Data,
                                   shouldContinue: @escaping @Sendable () async -> Bool) async throws -> ExposureWriteResult {
         guard connectionInfo != nil else { throw PtpIpSessionError.notConnected }
         let generation = sessionGeneration
         do {
             return try await lock.withLock { [self] in
-                try await self.performExposureWrite(property: property, expectedCurrent: expectedCurrent,
+                try await self.performExposureWrite(property: property, expectedType: expectedType, expectedCurrent: expectedCurrent,
                                                     desired: desired, generation: generation, shouldContinue: shouldContinue)
             }
         } catch PtpIpSessionError.timeout(let stage) {
@@ -298,7 +298,7 @@ public actor PtpIpSession {
         }
     }
 
-    private func performExposureWrite(property: ExposureProperty, expectedCurrent: Data, desired: Data,
+    private func performExposureWrite(property: ExposureProperty, expectedType: UInt16, expectedCurrent: Data, desired: Data,
                                       generation: UInt64, shouldContinue: @Sendable () async -> Bool) async throws -> ExposureWriteResult {
         func ensureCurrent() throws {
             guard connectionInfo != nil, sessionGeneration == generation else { throw PtpIpSessionError.notConnected }
@@ -310,7 +310,7 @@ public actor PtpIpSession {
         try ensureCurrent()
         guard desc.response.isOK else { throw PtpIpSessionError.operationFailed(code: desc.response.code, opCode: PtpOpCode.getDevicePropDesc) }
         let parsed = try ExposureDescriptor.parse(desc.data, property: property)
-        guard parsed.writable, parsed.choices.contains(desired) else { throw ExposureWriteError.notWritableOrValueNotAllowed }
+        guard parsed.type == expectedType, parsed.writable, parsed.choices.contains(desired) else { throw ExposureWriteError.notWritableOrValueNotAllowed }
         let before = try await runOperation(opCode: PtpOpCode.getDevicePropValue, params: [code], expectData: true,
                                             timeout: 6, maxDataBytes: 4)
         try ensureCurrent()

@@ -110,6 +110,9 @@ struct AppRootView: View {
                         NavigationLink { ExposureEditorScreen(model: model) } label: {
                             Label("实验性曝光设置", systemImage: "slider.horizontal.3")
                         }
+                        NavigationLink { ExposureEditorScreen(model: model, menu: true) } label: {
+                            Label("实验性 i 菜单", systemImage: "square.grid.3x3")
+                        }
                         Button(model.exposureBusy ? "读取中…" : "读取曝光信息") {
                             Task { await model.refreshExposure() }
                         }

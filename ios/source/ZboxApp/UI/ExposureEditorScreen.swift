@@ -3,7 +3,13 @@ import ZboxCore
 
 struct ExposureEditorScreen: View {
     @ObservedObject var model: CameraConnectionModel
-    @State private var property: ExposureProperty = .iso
+    private let menu: Bool
+    @State private var property: ExposureProperty
+    init(model: CameraConnectionModel, menu: Bool = false) {
+        self.model = model
+        self.menu = menu
+        self._property = State(initialValue: menu ? .picture : .iso)
+    }
     @State private var desired: Data?
     @State private var confirmation = false
 
@@ -13,11 +19,11 @@ struct ExposureEditorScreen: View {
 
     var body: some View {
         List {
-            Section("实验性曝光设置") {
-                Text("仅提供相机描述符声明且可识别的值；更改会修改机身设置，尚未在 iPhone + Z 30 真机验证。")
+            Section(menu ? "实验性 i 菜单" : "实验性曝光设置") {
+                Text("仅提供相机描述符声明且可识别的值；更改会修改机身设置，尚未在 iPhone + Z 30 真机验证。i 菜单未知含义按原始代码显示，不猜测名称。")
                     .font(.footnote).foregroundStyle(.secondary)
                 Picker("属性", selection: $property) {
-                    ForEach(ExposureProperty.allCases, id: \.rawValue) { item in
+                    ForEach(menu ? ExposureProperty.menuCases : ExposureProperty.exposureCases, id: \.rawValue) { item in
                         Text(item.title).tag(item)
                     }
                 }
@@ -49,7 +55,7 @@ struct ExposureEditorScreen: View {
                 }
             }
         }
-        .navigationTitle("曝光设置")
+        .navigationTitle(menu ? "i 菜单" : "曝光设置")
         .confirmationDialog("确认修改相机设置？", isPresented: $confirmation, titleVisibility: .visible) {
             Button("确认写入") {
                 if let d = model.exposureDescriptor, let desired, d.property == property {

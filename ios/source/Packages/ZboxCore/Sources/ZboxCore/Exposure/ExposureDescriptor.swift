@@ -3,6 +3,7 @@ import Foundation
 /// A restricted, typed PTP DevicePropDesc. Unknown types/forms are never writable.
 public struct ExposureDescriptor: Equatable, Sendable {
     public let property: ExposureProperty
+    public let type: UInt16
     public let writable: Bool
     public let current: Data
     public let choices: [Data]
@@ -10,9 +11,15 @@ public struct ExposureDescriptor: Equatable, Sendable {
     public static func parse(_ data: Data, property: ExposureProperty) throws -> ExposureDescriptor {
         func fail() -> PtpIpSessionError { .malformed(stage: "曝光描述符", detail: "类型、范围或长度未识别，禁止写入") }
         guard data.count >= 5, data.readLE(UInt16.self, at: 0) == property.rawValue else { throw fail() }
+        let type = data.readLE(UInt16.self, at: 2)
         let expectedType: UInt16 = property == .compensation ? 0x0003 : (property == .nikonShutter ? 0x0006 : 0x0004)
-        guard data.readLE(UInt16.self, at: 2) == expectedType, data[data.startIndex + 4] <= 1 else { throw fail() }
-        let width = expectedType == 0x0006 ? 4 : 2
+        guard data[data.startIndex + 4] <= 1 else { throw fail() }
+        if property.isMenuScalar {
+            guard (1...6).contains(type) else { throw fail() }
+        } else {
+            guard type == expectedType else { throw fail() }
+        }
+        let width = type <= 2 ? 1 : (type <= 4 ? 2 : 4)
         let formAt = 5 + width * 2
         guard data.count > formAt else { throw fail() }
         let current = data.slice(at: 5 + width, count: width)
@@ -30,7 +37,7 @@ public struct ExposureDescriptor: Equatable, Sendable {
             guard data.count >= formAt + 1 + width * 3 else { throw fail() }
             func number(_ pos: Int) -> Int64 {
                 let raw = data.readLE(UInt16.self, at: pos)
-                return expectedType == 0x0003 ? Int64(Int16(bitPattern: raw)) : Int64(raw)
+                return type == 0x0003 ? Int64(Int16(bitPattern: raw)) : Int64(raw)
             }
             let low = number(formAt + 1), high = number(formAt + 3), step = number(formAt + 5)
             guard step > 0, high >= low, (high - low) / step < 256 else { throw fail() }
@@ -46,7 +53,7 @@ public struct ExposureDescriptor: Equatable, Sendable {
             throw fail()
         }
         guard !choices.isEmpty else { throw fail() }
-        return ExposureDescriptor(property: property, writable: data[data.startIndex + 4] == 1,
+        return ExposureDescriptor(property: property, type: type, writable: data[data.startIndex + 4] == 1,
                                   current: current, choices: choices)
     }
 }

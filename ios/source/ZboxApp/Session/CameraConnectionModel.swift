@@ -684,7 +684,7 @@ final class CameraConnectionModel: ObservableObject {
         }
         do {
             let result = try await active.writeExposureOnce(property: descriptor.property,
-                expectedCurrent: descriptor.current, desired: desired, shouldContinue: { [weak self, weak active] in
+                expectedType: descriptor.type, expectedCurrent: descriptor.current, desired: desired, shouldContinue: { [weak self, weak active] in
                     guard let self, let active else { return false }
                     return await self.mayCommitExposure(active)
                 })
@@ -719,7 +719,7 @@ final class CameraConnectionModel: ObservableObject {
         exposureBusy = true
         exposureRows = []
         defer { if session === active { exposureBusy = false } }
-        for property in ExposureProperty.allCases {
+        for property in ExposureProperty.exposureCases {
             do {
                 let value = try await active.fetchExposure(property)
                 guard session === active, phase == .connected else { return }
