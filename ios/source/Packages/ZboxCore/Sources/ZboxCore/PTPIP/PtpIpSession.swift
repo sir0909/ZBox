@@ -182,6 +182,11 @@ public actor PtpIpSession {
         } catch PtpIpSessionError.dataLimitExceeded(let limit) {
             if sessionGeneration == generation { await close() }
             throw PtpIpSessionError.dataLimitExceeded(limit: limit)
+        } catch {
+            // An incomplete or malformed wire transaction cannot be safely reused.
+            // Camera rejection is a normal operation response, not an error here.
+            if sessionGeneration == generation { await close() }
+            throw error
         }
     }
 

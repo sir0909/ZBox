@@ -45,6 +45,35 @@ private actor PausedCommandChannel: PtpIpByteChannel {
 }
 
 final class PtpIpConcurrencyTests: XCTestCase {
+    func testTransactionMismatchInvalidatesBeforeNextCommand() async throws {
+        let fallback = FakeCamera.command()
+        let command = ScriptedChannel { bytes in
+            if bytes.readLE(UInt32.self, at: 4) == PtpIpPacketType.operationRequest.rawValue,
+               bytes.readLE(UInt16.self, at: 12) == 0x9001 {
+                let tx = bytes.readLE(UInt32.self, at: 14)
+                return [opResponse(PtpResponseCode.ok, tx &+ 1)]
+            }
+            return fallback(bytes)
+        }
+        let session = PtpIpSession(commandChannel: command,
+            openEventChannel: { ScriptedChannel(FakeCamera.event) }, config: testConfig(), settle: { _ in })
+        _ = try await session.connect()
+        do {
+            _ = try await session.execute(opCode: 0x9001)
+            XCTFail("transaction mismatch accepted")
+        } catch PtpIpSessionError.transactionMismatch { }
+        let info = await session.connectionInfo
+        XCTAssertNil(info)
+        do {
+            _ = try await session.execute(opCode: 0x9002)
+            XCTFail("command sent after corrupted transaction")
+        } catch PtpIpSessionError.notConnected { }
+        let sent = await command.sent
+        let opCodes = sent.filter { $0.readLE(UInt32.self, at: 4) == PtpIpPacketType.operationRequest.rawValue }
+            .map { $0.readLE(UInt16.self, at: 12) }
+        XCTAssertFalse(opCodes.contains(0x9002))
+    }
+
     func testQueuedOperationCannotSendAfterCloseBegins() async throws {
         let sendPause = TestPause(), closePause = TestPause()
         let command = PausedCommandChannel(sendPause: sendPause, closePause: closePause)
