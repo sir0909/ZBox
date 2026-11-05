@@ -201,6 +201,24 @@ public actor PtpIpSession {
         return value
     }
 
+    /// One read-only DeviceReady attempt. Only DeviceBusy is retryable.
+    public func nikonDeviceReady() async throws -> Bool {
+        let result = try await execute(opCode: PtpOpCode.nikonDeviceReady, timeoutSeconds: 6, maxDataBytes: 0)
+        if result.response.isOK { return true }
+        if result.response.code == PtpResponseCode.deviceBusy { return false }
+        throw PtpIpSessionError.operationFailed(code: result.response.code, opCode: PtpOpCode.nikonDeviceReady)
+    }
+
+    /// A single explicit camera-card shutter request. OK means accepted, not that a
+    /// file was verified on the card. Never automatically retry on timeout/disconnect.
+    public func captureToCardOnce() async throws {
+        let result = try await execute(opCode: PtpOpCode.nikonCaptureToMedia,
+            params: [UInt32.max, 0], timeoutSeconds: 60, maxDataBytes: 0)
+        guard result.response.isOK else {
+            throw PtpIpSessionError.operationFailed(code: result.response.code, opCode: PtpOpCode.nikonCaptureToMedia)
+        }
+    }
+
     /// Nikon STA album operations. They are read-only and must be initiated explicitly.
     public func fetchStorageIDsForAlbum() async throws -> [UInt32] {
         let result = try await execute(opCode: PtpOpCode.getStorageIDs, expectData: true,

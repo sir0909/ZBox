@@ -15,7 +15,7 @@ struct STAAlbumScreen: View {
                 }
                 .disabled(model.albumBusy || !model.connectedSTA || model.liveViewBusy ||
                           model.batteryBusy || model.slotsBusy || model.exposureBusy ||
-                          model.monitorBusy || model.pairingBusy || model.pairingPrepared)
+                          model.monitorBusy || model.pairingBusy || model.pairingPrepared || model.captureBusy)
                 if model.albumBusy {
                     Button("取消当前读取/下载", role: .cancel) { model.cancelAlbumWork() }
                     if let progress = model.albumProgress { ProgressView(value: progress) }
@@ -47,7 +47,7 @@ struct STAAlbumScreen: View {
                             Image(systemName: "arrow.down.circle")
                         }
                     }
-                    .disabled(model.albumBusy || model.liveViewBusy || model.phase != .connected)
+                    .disabled(model.albumBusy || model.liveViewBusy || model.captureBusy || model.phase != .connected)
                 }
             }
         }

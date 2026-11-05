@@ -5,6 +5,7 @@ import UIKit
 struct LiveViewScreen: View {
     @ObservedObject var model: CameraConnectionModel
     @Environment(\.dismiss) private var dismiss
+    @State private var confirmCapture = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -42,11 +43,17 @@ struct LiveViewScreen: View {
                     .clipped()
                     .accessibilityElement(children: .combine)
 
+                    if model.captureBusy || model.captureMessage != "拍摄到机身存储卡" {
+                        Text(model.captureMessage).font(.caption).foregroundStyle(.white.opacity(0.8))
+                            .padding(.horizontal)
+                    }
                     HStack(spacing: 18) {
                         Text(model.liveViewMessage)
                             .font(.caption).foregroundStyle(.white.opacity(0.75))
                             .lineLimit(2)
                         Spacer()
+                        Button(model.captureBusy ? "拍摄中…" : "拍一张") { confirmCapture = true }
+                            .disabled(!model.canCapture)
                         if model.liveViewPhase == .idle {
                             Button("开始取景") { model.startLiveView() }
                                 .disabled(!model.canStartLiveView)
@@ -63,6 +70,15 @@ struct LiveViewScreen: View {
         }
         .navigationBarBackButtonHidden(true)
         .toolbar(.hidden, for: .navigationBar)
-        .onDisappear { Task { await model.stopLiveView() } }
+        .confirmationDialog("拍摄一张照片到相机存储卡？", isPresented: $confirmCapture, titleVisibility: .visible) {
+            Button("确认拍摄") { Task { await model.captureOneToCard() } }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("将先停止取景。相机接受快门命令不代表已核实落卡；如连接中断，请先检查机身，避免重复拍摄。")
+        }
+        .onDisappear {
+            model.cancelPendingCapture()
+            Task { await model.stopLiveView() }
+        }
     }
 }

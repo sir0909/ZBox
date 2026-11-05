@@ -39,6 +39,14 @@ final class CameraConnectionModel: ObservableObject {
     @Published private(set) var albumProgress: Double?
     @Published private(set) var albumDownloadURL: URL?
     private var albumCancelRequested = false
+    @Published private(set) var captureBusy = false
+    @Published private(set) var captureMessage = "拍摄到机身存储卡"
+    private var captureCancelRequested = false
+    var canCapture: Bool {
+        phase == .connected && !captureBusy && !albumBusy && !batteryBusy && !monitorBusy &&
+        !slotsBusy && !exposureBusy && !pairingBusy && !pairingPrepared &&
+        (liveViewPhase == .idle || liveViewPhase == .streaming)
+    }
     @Published private(set) var clientName = PtpIpConnector.defaultPrimaryName
     enum LiveViewPhase: Equatable { case idle, starting, streaming, stopping }
     @Published private(set) var liveViewPhase: LiveViewPhase = .idle
@@ -48,7 +56,7 @@ final class CameraConnectionModel: ObservableObject {
     var liveViewBusy: Bool { liveViewPhase != .idle }
     var canStartLiveView: Bool {
         phase == .connected && !liveViewBusy && !batteryBusy && !monitorBusy &&
-        !slotsBusy && !exposureBusy && !albumBusy && !pairingBusy && !pairingPrepared
+        !slotsBusy && !exposureBusy && !albumBusy && !captureBusy && !pairingBusy && !pairingPrepared
     }
     @Published var manualHost = ""
     @Published private(set) var guidText = "加载中…"
@@ -167,7 +175,9 @@ final class CameraConnectionModel: ObservableObject {
         // Block new work, let an in-flight live-view transaction finish, then stop it.
         // iOS may suspend the app before cleanup finishes; camera state is not guaranteed.
         guard phase != .disconnecting else { return }
+        let wasCapturing = captureBusy
         phase = .disconnecting
+        captureCancelRequested = true
         albumCancelRequested = true
         let oldSession = session
         await stopLiveView()
@@ -183,6 +193,7 @@ final class CameraConnectionModel: ObservableObject {
         albumBusy = false
         albumItems = []
         albumProgress = nil
+        captureBusy = false
         liveViewStopRequested = true
         liveViewPhase = .idle
         liveViewJPEG = nil
@@ -194,7 +205,7 @@ final class CameraConnectionModel: ObservableObject {
         pairingPrepared = false
         pairingBusy = false
         needsRecovery = false
-        statusMessage = reason
+        statusMessage = wasCapturing ? "拍摄结果可能未知，请先检查相机存储卡，勿重复拍摄" : reason
         log.add("会话已关闭")
         await oldSession?.close()
     }
@@ -387,6 +398,7 @@ final class CameraConnectionModel: ObservableObject {
             albumBusy = false
             albumItems = []
             albumProgress = nil
+            captureBusy = false
             pairingBusy = false
             pairingPrepared = false
             pairingPIN = nil
@@ -414,7 +426,7 @@ final class CameraConnectionModel: ObservableObject {
 
     private func probeIfIdle(_ active: PtpIpSession) async {
         guard session === active, phase == .connected, !batteryBusy, !pairingBusy,
-              !pairingPrepared, !slotsBusy, !monitorBusy, !exposureBusy, !albumBusy, !liveViewBusy else { return }
+              !pairingPrepared, !slotsBusy, !monitorBusy, !exposureBusy, !albumBusy, !captureBusy, !liveViewBusy else { return }
         monitorBusy = true
         do {
             try await active.probeConnection()
@@ -432,7 +444,7 @@ final class CameraConnectionModel: ObservableObject {
 
     func refreshSlots() async {
         guard let active = session, phase == .connected, !slotsBusy, !batteryBusy,
-              !monitorBusy, !pairingBusy, !pairingPrepared, !exposureBusy, !albumBusy, !liveViewBusy else { return }
+              !monitorBusy, !pairingBusy, !pairingPrepared, !exposureBusy, !albumBusy, !captureBusy, !liveViewBusy else { return }
         slotsBusy = true
         slots = []
         defer { if session === active { slotsBusy = false } }
@@ -451,6 +463,56 @@ final class CameraConnectionModel: ObservableObject {
         log.add("C-1…C-9 只读扫描结束，未修改相机数据")
     }
 
+    // MARK: - Single explicit shutter (camera card)
+
+    func cancelPendingCapture() {
+        // Do not cancel an on-wire shutter command; its outcome may be unknown.
+        if captureBusy { captureCancelRequested = true }
+    }
+
+    func captureOneToCard() async {
+        guard let active = session, canCapture else { return }
+        captureBusy = true
+        captureCancelRequested = false
+        captureMessage = "正在停止取景并检查机身…"
+        defer { if session === active { captureBusy = false } }
+        await stopLiveView()
+        guard session === active, phase == .connected, !captureCancelRequested else {
+            if session === active { captureMessage = "拍摄已取消，未发送快门命令" }
+            return
+        }
+        do {
+            var ready = false
+            for _ in 0..<20 {
+                guard session === active, phase == .connected, !captureCancelRequested else {
+                    if session === active { captureMessage = "拍摄已取消，未发送快门命令" }
+                    return
+                }
+                if try await active.nikonDeviceReady() { ready = true; break }
+                try await Task.sleep(nanoseconds: 200_000_000)
+            }
+            guard ready else { captureMessage = "机身尚未就绪，未发送快门命令"; return }
+            guard session === active, phase == .connected, !captureCancelRequested else {
+                if session === active { captureMessage = "拍摄已取消，未发送快门命令" }
+                return
+            }
+            captureMessage = "快门命令已发送，等待相机响应…"
+            try await active.captureToCardOnce()
+            guard session === active, phase == .connected else { return }
+            captureMessage = "相机已接受快门命令；尚未验证照片已写入存储卡，请在机身检查。"
+            log.add("单次快门命令已接受；未核实落卡")
+        } catch PtpIpSessionError.operationFailed(let code, let op) {
+            if session === active {
+                captureMessage = String(format: "相机拒绝命令 0x%04X：0x%04X；请检查机身", op, code)
+            }
+        } catch {
+            guard session === active, phase == .connected else { return }
+            captureMessage = "拍摄结果未知；请先检查相机，勿立即重试。\(describe(error))"
+            log.add(captureMessage)
+            await disconnect(reason: captureMessage)
+        }
+    }
+
     // MARK: - Explicit Nikon STA album (read-only)
 
     func cancelAlbumWork() {
@@ -460,7 +522,7 @@ final class CameraConnectionModel: ObservableObject {
     func loadSTAAlbum() async {
         guard let active = session, phase == .connected, connectedSTA, !albumBusy,
               !liveViewBusy, !batteryBusy, !slotsBusy, !monitorBusy, !exposureBusy,
-              !pairingBusy, !pairingPrepared else { return }
+              !pairingBusy, !pairingPrepared, !captureBusy else { return }
         albumBusy = true
         albumCancelRequested = false
         albumItems = []
@@ -492,7 +554,7 @@ final class CameraConnectionModel: ObservableObject {
     func downloadSTAItem(_ item: NikonSTAAlbumItem) async {
         guard let active = session, phase == .connected, connectedSTA, !albumBusy,
               !liveViewBusy, !batteryBusy, !slotsBusy, !monitorBusy, !exposureBusy,
-              !pairingBusy, !pairingPrepared, albumItems.contains(item) else { return }
+              !pairingBusy, !pairingPrepared, !captureBusy, albumItems.contains(item) else { return }
         albumBusy = true
         albumCancelRequested = false
         albumProgress = 0
@@ -561,7 +623,7 @@ final class CameraConnectionModel: ObservableObject {
 
     func refreshExposure() async {
         guard let active = session, phase == .connected, !exposureBusy, !batteryBusy,
-              !slotsBusy, !monitorBusy, !pairingBusy, !pairingPrepared, !albumBusy, !liveViewBusy else { return }
+              !slotsBusy, !monitorBusy, !pairingBusy, !pairingPrepared, !albumBusy, !captureBusy, !liveViewBusy else { return }
         exposureBusy = true
         exposureRows = []
         defer { if session === active { exposureBusy = false } }
@@ -583,7 +645,7 @@ final class CameraConnectionModel: ObservableObject {
     // MARK: - Read-only battery
 
     func refreshBattery() async {
-        guard let active = session, phase == .connected, !batteryBusy, !pairingPrepared, !pairingBusy, !monitorBusy, !slotsBusy, !exposureBusy, !albumBusy, !liveViewBusy else { return }
+        guard let active = session, phase == .connected, !batteryBusy, !pairingPrepared, !pairingBusy, !monitorBusy, !slotsBusy, !exposureBusy, !albumBusy, !captureBusy, !liveViewBusy else { return }
         batteryBusy = true
         defer { if session === active { batteryBusy = false } }
         do {
@@ -608,7 +670,7 @@ final class CameraConnectionModel: ObservableObject {
     // MARK: - Nikon host registration
 
     func prepareRegistration() async {
-        guard let session, phase == .connected, !batteryBusy, !pairingBusy, !monitorBusy, !slotsBusy, !exposureBusy, !albumBusy, !liveViewBusy else { return }
+        guard let session, phase == .connected, !batteryBusy, !pairingBusy, !monitorBusy, !slotsBusy, !exposureBusy, !albumBusy, !captureBusy, !liveViewBusy else { return }
         pairingBusy = true
         defer { if self.session === session { pairingBusy = false } }
         do {
@@ -631,7 +693,7 @@ final class CameraConnectionModel: ObservableObject {
     }
 
     func confirmRegistration() async {
-        guard let session, phase == .connected, !batteryBusy, !pairingBusy, !monitorBusy, !slotsBusy, !exposureBusy, !albumBusy, !liveViewBusy else { return }
+        guard let session, phase == .connected, !batteryBusy, !pairingBusy, !monitorBusy, !slotsBusy, !exposureBusy, !albumBusy, !captureBusy, !liveViewBusy else { return }
         pairingBusy = true
         defer { if self.session === session { pairingBusy = false } }
         do {
