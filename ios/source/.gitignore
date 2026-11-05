@@ -1,0 +1,12 @@
+build/
+output/
+DerivedData/
+Zbox.xcodeproj/
+.build/
+.swiftpm/
+xcuserdata/
+*.ipa
+Payload/
+*.p12
+*.mobileprovision
+*.log

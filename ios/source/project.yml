@@ -1,0 +1,46 @@
+name: Zbox
+options:
+  bundleIdPrefix: com.zbox
+  deploymentTarget:
+    iOS: "17.0"
+  xcodeVersion: "16.0"
+
+packages:
+  ZboxCore:
+    path: Packages/ZboxCore
+
+targets:
+  Zbox:
+    type: application
+    platform: iOS
+    productName: Zbox
+    sources:
+      - path: ZboxApp
+    dependencies:
+      - package: ZboxCore
+        product: ZboxCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zbox.ai
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.10"
+        TARGETED_DEVICE_FAMILY: "1,2"
+    info:
+      path: ZboxApp/Info.plist
+      properties:
+        CFBundleDisplayName: Zbox
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeRight
+          - UIInterfaceOrientationLandscapeLeft
+        NSLocalNetworkUsageDescription: "Zbox 需要访问本地网络,以便在手机热点或局域网中发现并连接尼康相机(PTP/IP 15740 端口)。"
+        NSBonjourServices:
+          - "_ptp._tcp"
+          - "_nikon._tcp"
+        NSCameraUsageDescription: "Zbox 需要相机连接权限,以便通过数据线(USB PTP)读取机身状态、实时取景与传输照片。"
+        NSPhotoLibraryAddUsageDescription: "Zbox 需要相册写入权限,以便将从相机下载的照片和视频保存到手机相册。"
+        NSPhotoLibraryUsageDescription: "Zbox 需要访问相册以选择调色参考图和姿势参考图(所有图片仅在本地处理)。"
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true

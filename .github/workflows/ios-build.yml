@@ -1,0 +1,62 @@
+# iOS 云端构建(无 Mac 环境)。工程位于仓库内的 ios/source。
+# 发布 iOS 版请使用标签 ios-v*,且不要标记为 latest:安卓版更新检查读取 /releases/latest。
+name: Build Zbox iOS IPA
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-unsigned-ipa:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run ZboxCore unit tests
+        working-directory: ios/source/Packages/ZboxCore
+        run: swift test --parallel
+
+      - name: Generate Xcode project via XcodeGen
+        working-directory: ios/source
+        run: |
+          brew list xcodegen &>/dev/null || brew install xcodegen
+          xcodegen generate
+
+      - name: Build unsigned Release app for iOS device
+        working-directory: ios/source
+        run: |
+          xcodebuild clean build \
+            -project Zbox.xcodeproj \
+            -scheme Zbox \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Package Zbox-unsigned.ipa and SHA256
+        working-directory: ios/source
+        run: |
+          rm -rf Payload output
+          mkdir -p Payload output
+          cp -R build/Build/Products/Release-iphoneos/Zbox.app Payload/
+          zip -qry output/Zbox-1.0.0-unsigned.ipa Payload
+          shasum -a 256 output/Zbox-1.0.0-unsigned.ipa > output/SHA256SUMS.txt
+          cat output/SHA256SUMS.txt
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Zbox-iOS-Unsigned-IPA
+          path: ios/source/output/*
+          retention-days: 30
