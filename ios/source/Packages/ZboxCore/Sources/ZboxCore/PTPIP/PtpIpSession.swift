@@ -154,8 +154,14 @@ public actor PtpIpSession {
     ) async throws -> PtpOperationResult {
         guard connectionInfo != nil else { throw PtpIpSessionError.notConnected }
         let timeout = timeoutSeconds ?? config.commandTimeoutSeconds
-        return try await lock.withLock { [self] in
-            try await self.runOperation(opCode: opCode, params: params, expectData: expectData, timeout: timeout)
+        do {
+            return try await lock.withLock { [self] in
+                try await self.runOperation(opCode: opCode, params: params, expectData: expectData, timeout: timeout)
+            }
+        } catch PtpIpSessionError.timeout(let stage) {
+            // A timed-out transaction has a closed channel and cannot be reused safely.
+            await close()
+            throw PtpIpSessionError.timeout(stage: stage)
         }
     }
 
@@ -287,6 +293,10 @@ public actor PtpIpSession {
     }
 
     private func readPacket(_ stream: PtpIpPacketStream, stage: String, timeout: Double) async throws -> PtpIpPacket {
-        try await withPtpIpTimeout(stage: stage, seconds: timeout) { try await stream.nextPacket() }
+        try await withPtpIpTimeout(stage: stage, seconds: timeout, onTimeout: {
+            await stream.close()
+        }) {
+            try await stream.nextPacket()
+        }
     }
 }

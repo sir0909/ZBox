@@ -20,6 +20,7 @@ public enum PtpIpSessionError: Error, Equatable, Sendable {
 public func withPtpIpTimeout<T: Sendable>(
     stage: String,
     seconds: Double,
+    onTimeout: @escaping @Sendable () async -> Void = {},
     operation: @escaping @Sendable () async throws -> T
 ) async throws -> T {
     try await withThrowingTaskGroup(of: T?.self) { group in
@@ -30,6 +31,9 @@ public func withPtpIpTimeout<T: Sendable>(
         }
         defer { group.cancelAll() }
         guard let first = try await group.next(), let value = first else {
+            // Closing the underlying channel wakes a non-cancellable socket receive.
+            // A task group cannot return until all of its children have finished.
+            await onTimeout()
             throw PtpIpSessionError.timeout(stage: stage)
         }
         return value

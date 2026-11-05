@@ -201,6 +201,9 @@ final class CameraConnectionModel: ObservableObject {
             } else {
                 log.add("相机未返回有效的电池电量")
             }
+        } catch PtpIpSessionError.timeout(let stage) {
+            guard session === active, phase == .connected else { return }
+            await handleTimeout(stage)
         } catch {
             guard session === active, phase == .connected else { return }
             batteryLevel = nil
@@ -223,6 +226,9 @@ final class CameraConnectionModel: ObservableObject {
                 ? "已准备注册：请在相机上完成「连接到计算机 → 配对」，再点确认"
                 : "请在相机输入 PIN，完成后点确认"
             log.add("主机注册已准备（PIN 不写入日志）")
+        } catch PtpIpSessionError.timeout(let stage) {
+            guard self.session === session else { return }
+            await handleTimeout(stage)
         } catch {
             guard self.session === session else { return }
             statusMessage = "准备注册失败：\(describe(error))"
@@ -241,6 +247,9 @@ final class CameraConnectionModel: ObservableObject {
             pairingPIN = nil
             statusMessage = "主机注册已确认"
             log.add("0x935A 注册确认成功")
+        } catch PtpIpSessionError.timeout(let stage) {
+            guard self.session === session else { return }
+            await handleTimeout(stage)
         } catch {
             guard self.session === session else { return }
             pairingPrepared = false
@@ -250,6 +259,12 @@ final class CameraConnectionModel: ObservableObject {
     }
 
     // MARK: - Helpers
+
+    private func handleTimeout(_ stage: String) async {
+        await disconnect()
+        statusMessage = "\(stage)超时，连接已关闭；请重新连接"
+        log.add("\(stage)超时，已关闭失效会话")
+    }
 
     private func maskSerial(_ serial: String) -> String {
         guard serial.count > 4 else { return "••••" }
