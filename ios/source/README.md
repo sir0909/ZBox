@@ -4,7 +4,7 @@
 > - 已写入：`project.yml`；仓库根的 `.github/workflows/ios-build.yml`；`Packages/ZboxCore`（PTP 容器与 PTP/IP 编解码、会话状态机、Nikon 连接策略、热点地址规划、DeviceInfo 解析，共 36 项单元测试）；`ZboxApp`（SwiftUI 界面、Keychain GUID、Network.framework 字节通道、热点扫描、日志控制台）。
 > - `ZboxCore` 的 36 项单元测试已在 Linux Swift 工具链上通过；`ZboxApp` 与 macOS/Xcode 构建尚未在 CI 上验证。
 > - 未完成：15 秒保活、电池与 C-1…C-9 设置槽读取、Bonjour（`_ptp._tcp`）发现、真机验收（iPhone 热点 + Nikon Z 30）。
-> - 应用目标暂用 Swift 5.10 语言模式；`ZboxCore` 包为 Swift 6 工具链。待编译通过后再切换应用目标为 Swift 6。
+> - 应用目标暂用 Swift 5 语言模式（Xcode 设置 `SWIFT_VERSION=5.0`）；`ZboxCore` 包为 Swift 6 工具链。待编译通过后再切换应用目标为 Swift 6。
 > - 本目录已合并进安卓仓库 `sir0909/ZBox` 的 `ios/` 目录（工程目录即 `ios/source`）。云端工作流位于仓库根 `.github/workflows/ios-build.yml`。发布 iOS 版请使用标签 `ios-v*`，且不要标记为 latest（安卓版更新检查读取 `/releases/latest`）。
 
 本目录（`E:\StandaloneBridge\workspace\ZBox\github\repo\ios\source`）用于存放 Zbox iOS 版的全部工程配置、Swift 核心包、SwiftUI 应用代码与 GitHub Actions 自动构建工作流。

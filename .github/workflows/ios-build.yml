@@ -4,7 +4,7 @@ name: Build Zbox iOS IPA
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "ios-m1-scaffold" ]
     paths:
       - "ios/**"
       - ".github/workflows/ios-build.yml"
