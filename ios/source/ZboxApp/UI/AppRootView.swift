@@ -4,6 +4,8 @@ import ZboxCore
 struct AppRootView: View {
     @ObservedObject var model: CameraConnectionModel
     @State private var guidDraft = ""
+    @AppStorage("viewfinder.grid") private var gridGuide = false
+    @AppStorage("viewfinder.frame16x9") private var frameGuide = false
 
     private func slotDescription(_ slot: PictureControlSlot) -> String {
         switch slot.state {
@@ -16,6 +18,12 @@ struct AppRootView: View {
 
     var body: some View {
         List {
+                Section("取景辅助（仅手机显示）") {
+                    Toggle("九宫格", isOn: $gridGuide)
+                    Toggle("16:9 画幅框", isOn: $frameGuide)
+                    Text("辅助线只叠加在手机画面上，不修改相机设置或原照片。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
                 Section("工程状态") {
                     LabeledContent("阶段", value: "M2 实时取景开发中")
                     LabeledContent("协议核心", value: "ZboxCore")

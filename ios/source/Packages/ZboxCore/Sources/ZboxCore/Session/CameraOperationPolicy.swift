@@ -4,11 +4,11 @@ import Foundation
 /// The caller still owns flags, cancellation, command sequencing and connection identity.
 public struct CameraOperationPolicy: Sendable {
     public enum Operation: CaseIterable, Hashable, Sendable {
-        case battery, monitor, slots, exposure, album, capture, registration, liveView
+        case battery, monitor, slots, exposure, album, capture, focus, registration, liveView
     }
     public enum LiveView: Sendable { case idle, streaming, transitioning }
     public enum Request: CaseIterable, Sendable {
-        case battery, monitor, slots, exposure, album, capture, prepareRegistration, confirmRegistration, liveView
+        case battery, monitor, slots, exposure, album, capture, focus, prepareRegistration, confirmRegistration, liveView
     }
 
     public let connected: Bool
@@ -29,8 +29,8 @@ public struct CameraOperationPolicy: Sendable {
             guard pairingPrepared else { return false }
         } else if pairingPrepared { return false }
         switch liveView {
-        case .idle: return true
-        case .streaming: return request == .capture
+        case .idle: return request != .focus
+        case .streaming: return request == .capture || request == .focus
         case .transitioning: return false
         }
     }

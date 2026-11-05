@@ -17,6 +17,11 @@ public enum PtpIpSessionError: Error, Equatable, Sendable {
     case pairingCodeUnrecognized
 }
 
+public enum AutofocusError: Error, Equatable, Sendable {
+    case notAdvertised
+    case cancelledBeforeCommand
+}
+
 /// 为一个异步操作加超时。超时后由调用方关闭通道,不会自动重试。
 public func withPtpIpTimeout<T: Sendable>(
     stage: String,

@@ -13,6 +13,21 @@ private func u32(_ data: Data, _ offset: Int) -> UInt32 {
 private func u16(_ data: Data, _ offset: Int) -> UInt16 {
     UInt16(data[offset]) | (UInt16(data[offset + 1]) << 8)
 }
+private func ptpString(_ text: String) -> Data {
+    let units = Array(text.utf16) + [0]
+    var data = Data([UInt8(units.count)])
+    for unit in units { data += little(unit) }
+    return data
+}
+private func advertisedDeviceInfo() -> Data {
+    var d = little(UInt16(100)) + little(UInt32(10)) + little(UInt16(100)) + Data([0]) + little(UInt16(0))
+    let ops: [UInt16] = [0x1001, 0x1002, 0x90c1]
+    d += little(UInt32(ops.count))
+    for op in ops { d += little(op) }
+    for _ in 0..<4 { d += little(UInt32(0)) }
+    d += ptpString("Nikon") + ptpString("Z 30") + ptpString("1.0") + ptpString("123")
+    return d
+}
 private func response(_ tx: UInt32) -> Data {
     PtpIpCodec.frame(.operationResponse, payload: little(UInt16(0x2001)) + little(tx))
 }
@@ -54,7 +69,11 @@ private actor FakeAppCommand: PtpIpByteChannel {
         } else if type == PtpIpPacketType.operationRequest.rawValue {
             let op = u16(data, 12), tx = u32(data, 14)
             ops.append(op)
-            if op == 0x1004 {
+            if op == 0x1001 {
+                inbox.append(contentsOf: input(tx, advertisedDeviceInfo()))
+            } else if op == 0x9203 {
+                inbox.append(contentsOf: input(tx, Data([0xff, 0xd8, 0xff, 0xd9])))
+            } else if op == 0x1004 {
                 inbox.append(contentsOf: input(tx, little(UInt32(1)) + little(UInt32(0x10001))))
             } else if op == 0x9434 {
                 var metadata = little(UInt32(1)) + little(UInt32(1)) + little(UInt32(0x29000042))
@@ -97,8 +116,9 @@ final class CameraLifecycleTests: XCTestCase {
         let config = PtpIpSessionConfig(initiatorGuid: Data(repeating: 1, count: 16), initiatorName: "Test", staMode: true)
         let session = PtpIpSession(commandChannel: command, openEventChannel: { FakeAppEvent() }, config: config, settle: { _ in })
         _ = try await session.connect()
+        _ = try await session.fetchDeviceInfo()
         let model = CameraConnectionModel()
-        model.installSessionForTesting(session)
+        model.installSessionForTesting(session, supportsAutofocus: true)
         return (model, command, pause)
     }
     private func awaitIdle(_ model: CameraConnectionModel) async throws {
@@ -181,7 +201,7 @@ final class CameraLifecycleTests: XCTestCase {
         await model.refreshBattery()
         await model.loadExposureDescriptor(.iso)
         let whileInactive = await command.operations()
-        XCTAssertEqual(whileInactive, [0x1002]) // handshake only
+        XCTAssertEqual(whileInactive, [0x1002, 0x1001]) // setup only
         XCTAssertFalse(model.canStartLiveView)
         model.appBecameActive()
         XCTAssertTrue(model.canStartLiveView)
@@ -221,5 +241,24 @@ final class CameraLifecycleTests: XCTestCase {
         XCTAssertTrue(model.albumItems.isEmpty)
         let ops = await command.operations()
         XCTAssertFalse(ops.contains(0x9434))
+    }
+    func testInactiveWhileAutofocusQueuedDoesNotSendAF() async throws {
+        let (model, command, pause) = try await makeModel(pausedOp: 0x9203)
+        model.startLiveView()
+        await pause.untilEntered()
+        let focus = Task { await model.autofocusOnce() }
+        for _ in 0..<200 {
+            if model.focusBusy { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(model.focusBusy)
+        model.appBecameInactive()
+        await pause.release()
+        await focus.value
+        try await awaitIdle(model)
+        let ops = await command.operations()
+        XCTAssertFalse(ops.contains(0x90c1))
+        XCTAssertTrue(ops.contains(0x9202))
+        await model.disconnect()
     }
 }

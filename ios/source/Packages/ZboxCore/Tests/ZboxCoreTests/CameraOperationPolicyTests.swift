@@ -20,12 +20,13 @@ final class CameraOperationPolicyTests: XCTestCase {
         let normal = CameraOperationPolicy(connected: true, pairingPrepared: false, busy: [], liveView: .idle)
         XCTAssertFalse(normal.permits(.confirmRegistration))
         XCTAssertTrue(normal.permits(.prepareRegistration))
+        XCTAssertFalse(normal.permits(.focus))
     }
-    func testLiveViewOnlyPermitsCaptureWhileStreaming() {
+    func testLiveViewOnlyPermitsCaptureAndFocusWhileStreaming() {
         let streaming = CameraOperationPolicy(connected: true, pairingPrepared: false, busy: [], liveView: .streaming)
         let transition = CameraOperationPolicy(connected: true, pairingPrepared: false, busy: [], liveView: .transitioning)
         for request in CameraOperationPolicy.Request.allCases {
-            XCTAssertEqual(streaming.permits(request), request == .capture)
+            XCTAssertEqual(streaming.permits(request), request == .capture || request == .focus)
             XCTAssertFalse(transition.permits(request))
         }
         let pairing = CameraOperationPolicy(connected: true, pairingPrepared: true, busy: [], liveView: .streaming)

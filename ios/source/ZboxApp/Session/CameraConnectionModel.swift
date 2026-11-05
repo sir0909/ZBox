@@ -68,6 +68,10 @@ final class CameraConnectionModel: ObservableObject {
         return Array(items.dropFirst(albumThumbnailPage).prefix(ThumbnailBatch.pageSize))
     }
     private var albumCancelRequested = false
+    @Published private(set) var focusSupported = false
+    @Published private(set) var focusBusy = false
+    @Published private(set) var focusMessage = "AF 尚未触发"
+    var canAutofocus: Bool { focusSupported && operationPolicy.permits(.focus) && !liveViewStopRequested }
     @Published private(set) var captureBusy = false
     @Published private(set) var captureMessage = "拍摄到机身存储卡"
     private var captureCancelRequested = false
@@ -93,6 +97,7 @@ final class CameraConnectionModel: ObservableObject {
         if exposureBusy { busy.insert(.exposure) }
         if albumBusy { busy.insert(.album) }
         if captureBusy { busy.insert(.capture) }
+        if focusBusy { busy.insert(.focus) }
         if pairingBusy { busy.insert(.registration) }
         let view: CameraOperationPolicy.LiveView
         switch liveViewPhase {
@@ -127,10 +132,11 @@ final class CameraConnectionModel: ObservableObject {
 
     #if DEBUG
     /// App-hosted tests inject a fully connected fake transport; excluded from Release.
-    func installSessionForTesting(_ active: PtpIpSession, sta: Bool = true) {
+    func installSessionForTesting(_ active: PtpIpSession, sta: Bool = true, supportsAutofocus: Bool = false) {
         precondition(phase == .idle && session == nil)
         session = active
         connectedSTA = sta
+        focusSupported = supportsAutofocus
         phase = .connected
     }
     #endif
@@ -270,6 +276,8 @@ final class CameraConnectionModel: ObservableObject {
         albumThumbnailCompleted = 0
         albumProgress = nil
         captureBusy = false
+        focusBusy = false
+        focusSupported = false
         liveViewStopRequested = true
         liveViewPhase = .idle
         liveViewJPEG = nil
@@ -334,6 +342,7 @@ final class CameraConnectionModel: ObservableObject {
             guard device.isNikon else {
                 throw PtpIpSessionError.malformed(stage: "DeviceInfo", detail: "目标不是 Nikon 设备，已停止")
             }
+            focusSupported = device.operations.contains(PtpOpCode.nikonAutofocus)
             deviceRows = [
                 DeviceRow(title: "厂商", value: device.manufacturer),
                 DeviceRow(title: "型号", value: NikonConnectionPolicy.normalizedModel(device.model)),
@@ -491,6 +500,8 @@ final class CameraConnectionModel: ObservableObject {
             albumThumbnailCompleted = 0
             albumProgress = nil
             captureBusy = false
+            focusBusy = false
+            focusSupported = false
             pairingBusy = false
             pairingPrepared = false
             pairingPIN = nil
@@ -551,6 +562,38 @@ final class CameraConnectionModel: ObservableObject {
             }
         }
         log.add("C-1…C-9 只读扫描结束，未修改相机数据")
+    }
+
+    // MARK: - Explicit single autofocus during live view
+
+    private func mayCommitAutofocus(_ active: PtpIpSession) -> Bool {
+        session === active && phase == .connected && appActive && focusBusy &&
+        liveViewPhase == .streaming && !liveViewStopRequested
+    }
+
+    func autofocusOnce() async {
+        guard let active = session, canAutofocus else { return }
+        focusBusy = true
+        focusMessage = "正在请求单次自动对焦…"
+        defer { if session === active { focusBusy = false } }
+        do {
+            try await active.autofocusOnce(shouldContinue: { [weak self, weak active] in
+                guard let self, let active else { return false }
+                return await self.mayCommitAutofocus(active)
+            })
+            guard session === active, phase == .connected else { return }
+            focusMessage = "相机已接受 AF 命令；是否合焦需检查画面。"
+        } catch AutofocusError.cancelledBeforeCommand {
+            if session === active { focusMessage = "AF 已取消，未发送命令" }
+        } catch AutofocusError.notAdvertised {
+            if session === active { focusSupported = false; focusMessage = "机身未声明 AF 命令" }
+        } catch PtpIpSessionError.operationFailed(let code, _) {
+            if session === active { focusMessage = String(format: "机身拒绝 AF：0x%04X；未自动重试", code) }
+        } catch {
+            guard session === active, phase == .connected else { return }
+            focusMessage = "AF 结果未知，请检查机身；连接已关闭。"
+            await disconnect(reason: focusMessage)
+        }
     }
 
     // MARK: - Single explicit shutter (camera card)

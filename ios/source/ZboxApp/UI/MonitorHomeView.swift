@@ -45,6 +45,7 @@ struct MonitorHomeView: View {
             if let bytes = model.liveViewJPEG, let image = UIImage(data: bytes) {
                 Image(uiImage: image).resizable().scaledToFit().clipShape(RoundedRectangle(cornerRadius: 14))
                     .accessibilityLabel("相机实时取景")
+                ViewfinderGuides(imageSize: image.size).clipShape(RoundedRectangle(cornerRadius: 14))
             } else {
                 VStack(spacing: 6) {
                     Image(systemName: "viewfinder").font(.title2)
@@ -79,11 +80,12 @@ struct MonitorHomeView: View {
                     Button("停取景", systemImage: "stop.fill") { Task { await model.stopLiveView() } }
                         .disabled(model.liveViewPhase == .stopping)
                 }
-                Button("AF", systemImage: "scope") {}.disabled(true)
+                Button("AF", systemImage: "scope") { Task { await model.autofocusOnce() } }.disabled(!model.canAutofocus)
                 Button("AI 构图", systemImage: "sparkles") {}.disabled(true)
                 Button("录像", systemImage: "video") {}.disabled(true)
             }.font(.caption).buttonStyle(.bordered).frame(maxWidth: .infinity)
-            Text("AF、AI 构图及录像尚未实现").font(.caption2).foregroundStyle(.secondary)
+            Text("\(model.focusMessage) · AF 为实验功能；AI 构图及录像尚未实现")
+                .font(.caption2).foregroundStyle(.secondary)
             HStack {
                 NavigationLink { ExposureEditorScreen(model: model) } label: { Label("曝光", systemImage: "slider.horizontal.3") }
                     .disabled(!connected)
@@ -132,7 +134,7 @@ struct MonitorHomeView: View {
                             }
                         }
                     }
-                    Text("取景辅助叠加尚未实现 · 相机操作不会自动启动")
+                    Text("九宫格与 16:9 画幅框仅在手机显示，可在设置中开关；不修改照片")
                         .font(.caption2).foregroundStyle(.secondary)
                     controls
                     HStack {

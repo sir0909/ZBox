@@ -51,6 +51,7 @@ struct LiveViewScreen: View {
             Color(white: 0.08)
             if let data = model.liveViewJPEG, let image = UIImage(data: data) {
                 Image(uiImage: image).resizable().scaledToFit().accessibilityLabel("相机实时取景")
+                ViewfinderGuides(imageSize: image.size)
             } else {
                 VStack(spacing: 10) {
                     Image(systemName: "viewfinder").font(.largeTitle)
@@ -82,6 +83,9 @@ struct LiveViewScreen: View {
                         .disabled(model.liveViewPhase == .stopping)
                 }
             }.buttonStyle(.borderedProminent)
+            Button(model.focusBusy ? "对焦中…" : "单次 AF") { Task { await model.autofocusOnce() } }
+                .disabled(!model.canAutofocus).buttonStyle(.bordered)
+            Text(model.focusMessage).font(.caption2).foregroundStyle(.white.opacity(0.7))
             HStack {
                 NavigationLink { ExposureEditorScreen(model: model) } label: {
                     Label("曝光", systemImage: "slider.horizontal.3")

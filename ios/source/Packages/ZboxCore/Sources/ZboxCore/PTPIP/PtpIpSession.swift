@@ -218,6 +218,29 @@ public actor PtpIpSession {
         return value
     }
 
+    /// Send one explicitly requested AF drive while the caller's live-view gate remains valid.
+    /// No auto-retry; an OK response means the command was accepted, not that focus was achieved.
+    public func autofocusOnce(shouldContinue: @escaping @Sendable () async -> Bool) async throws {
+        guard connectionInfo != nil else { throw PtpIpSessionError.notConnected }
+        let generation = sessionGeneration
+        let result = try await lock.withLock { [self] in
+            try await self.autofocusWhileLocked(generation: generation, shouldContinue: shouldContinue)
+        }
+        guard result.response.isOK else {
+            throw PtpIpSessionError.operationFailed(code: result.response.code, opCode: PtpOpCode.nikonAutofocus)
+        }
+    }
+
+    private func autofocusWhileLocked(generation: UInt64,
+        shouldContinue: @escaping @Sendable () async -> Bool) async throws -> PtpOperationResult {
+        guard connectionInfo != nil, sessionGeneration == generation else { throw PtpIpSessionError.notConnected }
+        guard deviceInfo?.operations.contains(PtpOpCode.nikonAutofocus) == true else { throw AutofocusError.notAdvertised }
+        guard await shouldContinue() else { throw AutofocusError.cancelledBeforeCommand }
+        guard connectionInfo != nil, sessionGeneration == generation else { throw PtpIpSessionError.notConnected }
+        return try await executeWhileLocked(opCode: PtpOpCode.nikonAutofocus, params: [], expectData: false,
+                                            timeout: 8, maxDataBytes: 0, generation: generation)
+    }
+
     /// One read-only DeviceReady attempt. Only DeviceBusy is retryable.
     public func nikonDeviceReady() async throws -> Bool {
         let result = try await execute(opCode: PtpOpCode.nikonDeviceReady, timeoutSeconds: 6, maxDataBytes: 0)
