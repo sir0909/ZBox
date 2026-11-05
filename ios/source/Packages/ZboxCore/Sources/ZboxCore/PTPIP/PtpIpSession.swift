@@ -193,6 +193,32 @@ public actor PtpIpSession {
         return value
     }
 
+    /// Explicitly enter live view. The caller must later request stop or close the session.
+    /// Camera state is changed; never invoke as an automatic capability probe.
+    public func startLiveView() async throws {
+        let result = try await execute(opCode: PtpOpCode.nikonStartLiveView, timeoutSeconds: 10)
+        guard result.response.isOK else {
+            throw PtpIpSessionError.operationFailed(code: result.response.code, opCode: PtpOpCode.nikonStartLiveView)
+        }
+    }
+
+    /// Stop live view and report the camera response; failure is not treated as success.
+    public func stopLiveView() async throws {
+        let result = try await execute(opCode: PtpOpCode.nikonEndLiveView, timeoutSeconds: 5)
+        guard result.response.isOK else {
+            throw PtpIpSessionError.operationFailed(code: result.response.code, opCode: PtpOpCode.nikonEndLiveView)
+        }
+    }
+
+    /// Fetch one frame. The result is a JPEG byte sequence, not a confirmed decoded image.
+    public func fetchLiveViewJPEG() async throws -> Data {
+        let result = try await execute(opCode: PtpOpCode.nikonGetLiveViewImage, expectData: true, timeoutSeconds: 12)
+        guard result.response.isOK else {
+            throw PtpIpSessionError.operationFailed(code: result.response.code, opCode: PtpOpCode.nikonGetLiveViewImage)
+        }
+        return try LiveViewFrame.jpeg(from: result.data)
+    }
+
     /// Idle PTP/IP health check. Any valid PTP response demonstrates reachability,
     /// including an operation-not-supported response (matching the Android implementation).
     public func probeConnection() async throws {
