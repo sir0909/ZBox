@@ -44,3 +44,27 @@ targets:
         NSPhotoLibraryUsageDescription: "Zbox 需要访问相册以选择调色参考图和姿势参考图(所有图片仅在本地处理)。"
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
+
+  ZboxTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: ZboxAppTests
+    dependencies:
+      - target: Zbox
+      - package: ZboxCore
+        product: ZboxCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zbox.ai.tests
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.0"
+
+schemes:
+  Zbox:
+    build:
+      targets:
+        Zbox: all
+    test:
+      targets:
+        - ZboxTests

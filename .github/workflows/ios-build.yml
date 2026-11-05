@@ -31,6 +31,15 @@ jobs:
           brew list xcodegen &>/dev/null || brew install xcodegen
           xcodegen generate
 
+      - name: Run app-hosted lifecycle tests on iOS Simulator
+        working-directory: ios/source
+        run: |
+          DEVICE_ID=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); phones=[x for devices in d["devices"].values() for x in devices if "iPhone" in x["name"] and x.get("isAvailable")]; print(phones[0]["udid"] if phones else "")')
+          test -n "$DEVICE_ID" || { echo "No available iPhone simulator"; exit 1; }
+          xcodebuild test -project Zbox.xcodeproj -scheme Zbox -configuration Debug \
+            -destination "platform=iOS Simulator,id=$DEVICE_ID" \
+            -derivedDataPath build-simulator CODE_SIGNING_ALLOWED=NO
+
       - name: Build unsigned Release app for iOS device
         working-directory: ios/source
         run: |

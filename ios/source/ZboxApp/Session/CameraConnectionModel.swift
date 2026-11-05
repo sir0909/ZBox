@@ -112,6 +112,25 @@ final class CameraConnectionModel: ObservableObject {
     private var liveViewTask: Task<Void, Never>?
     private var liveViewStopRequested = false
 
+    /// Centralized lifecycle entry point; avoid cancelling an on-wire PTP transaction.
+    func appBecameInactive() {
+        cancelAlbumWork()
+        cancelAlbumVerification()
+        cancelPendingCapture()
+        cancelPendingExposureWrite()
+        Task { await stopLiveView() }
+    }
+
+    #if DEBUG
+    /// App-hosted tests inject a fully connected fake transport; excluded from Release.
+    func installSessionForTesting(_ active: PtpIpSession, sta: Bool = true) {
+        precondition(phase == .idle && session == nil)
+        session = active
+        connectedSTA = sta
+        phase = .connected
+    }
+    #endif
+
     // MARK: - Identity
 
     func loadIdentity() {

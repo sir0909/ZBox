@@ -8,19 +8,23 @@ struct LiveViewScreen: View {
     @State private var confirmCapture = false
     @State private var landscapeRequested = false
     @State private var orientationMessage = ""
+    @State private var hostingWindow: UIWindow?
 
-    /// A scene request is not an orientation lock. System and iPad multitasking may reject it.
-    private func requestOrientation(_ mask: UIInterfaceOrientationMask, reportErrors: Bool) {
-        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-            .filter { $0.activationState == .foregroundActive }
-        guard scenes.count == 1, let scene = scenes.first else {
-            if reportErrors { orientationMessage = "无法确定当前窗口；请手动旋转设备" }
+    private func toggleLandscape() {
+        guard let window = hostingWindow else {
+            orientationMessage = "无法定位当前窗口；请手动旋转设备"
             return
         }
-        scene.windows.first(where: { $0.isKeyWindow })?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
-        scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { error in
-            if reportErrors {
-                DispatchQueue.main.async { orientationMessage = "系统未接受方向请求；请手动旋转设备：\(error.localizedDescription)" }
+        if landscapeRequested {
+            OrientationPolicy.shared.release(in: window, requestPortrait: true)
+            landscapeRequested = false
+            orientationMessage = "已恢复默认方向；竖屏请求由系统决定"
+        } else {
+            landscapeRequested = true
+            orientationMessage = "已请求横屏方向；系统或 iPad 多任务可能覆盖"
+            OrientationPolicy.shared.requestLandscape(in: window) { error in
+                landscapeRequested = false
+                orientationMessage = error
             }
         }
     }
@@ -32,9 +36,7 @@ struct LiveViewScreen: View {
             Text("实时取景").font(.headline)
             Spacer(minLength: 0)
             Button(landscapeRequested ? "退出横屏" : "横屏全屏") {
-                landscapeRequested.toggle()
-                orientationMessage = landscapeRequested ? "已请求横屏；能否旋转由系统决定" : "已请求竖屏"
-                requestOrientation(landscapeRequested ? .landscape : .portrait, reportErrors: true)
+                toggleLandscape()
             }.font(.caption)
             Text("\(model.liveViewFrames) 帧").font(.caption.monospacedDigit())
         }
@@ -113,6 +115,7 @@ struct LiveViewScreen: View {
                 }
             }
         }
+        .background(OrientationWindowReader(window: $hostingWindow).frame(width: 0, height: 0))
         .statusBarHidden(landscapeRequested)
         .navigationBarBackButtonHidden(true)
         .toolbar(.hidden, for: .navigationBar)
@@ -123,7 +126,7 @@ struct LiveViewScreen: View {
             Text("该功能尚未在 iPhone 与 Z 30 真机验证，将先停止取景。相机接受快门命令不代表已核实落卡；如连接中断，请先检查机身，避免重复拍摄。")
         }
         .onDisappear {
-            if landscapeRequested { requestOrientation(.portrait, reportErrors: false) }
+            if let window = hostingWindow { OrientationPolicy.shared.release(in: window, requestPortrait: landscapeRequested) }
             landscapeRequested = false
             orientationMessage = ""
             model.cancelPendingCapture()
