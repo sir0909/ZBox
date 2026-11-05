@@ -523,6 +523,22 @@ public actor PtpIpSession {
         return PictureControlSlot.decode(index: index, responseCode: result.response.code, data: result.data)
     }
 
+    /// Read exactly one occupied slot, without guessing at wrapper bytes. This method is
+    /// read-only; a denied/empty/unrecognized result is never treated as a usable backup.
+    public func fetchPictureControlRaw(index: Int) async throws -> Data {
+        guard (1...9).contains(index), let device = deviceInfo, device.isNikon,
+              device.operations.contains(PtpOpCode.nikonGetPictureControl) else {
+            throw PtpIpSessionError.malformed(stage: "PictureControl", detail: "设备或槽位不支持严格原始读取")
+        }
+        let result = try await execute(opCode: PtpOpCode.nikonGetPictureControl,
+            params: [UInt32(0x00c8 + index), 0], expectData: true, timeoutSeconds: 6, maxDataBytes: 614)
+        guard result.response.isOK else {
+            throw PtpIpSessionError.operationFailed(code: result.response.code, opCode: PtpOpCode.nikonGetPictureControl)
+        }
+        _ = try PictureControl614.parse(result.data)
+        return result.data
+    }
+
     /// Internal experimental transport primitive, intentionally not connected to the app.
     /// The caller must already have a verified backup, user confirmation, durable risk and
     /// an application-wide operation gate. GUID is not cryptographic authentication.

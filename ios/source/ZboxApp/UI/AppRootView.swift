@@ -37,7 +37,7 @@ struct AppRootView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("工程状态") {
-                    LabeledContent("阶段", value: "M2 实时取景开发中")
+                    LabeledContent("阶段", value: "M3 配方开发中，尚未真机验收")
                     LabeledContent("协议核心", value: "ZboxCore")
                 }
 
@@ -174,6 +174,14 @@ struct AppRootView: View {
                             Task { await model.disconnect() }
                         }
                     }
+                }
+
+                Section("优化校准备份") {
+                    NavigationLink { SlotBackupScreen(model: model) } label: {
+                        Label("槽位备份和导出（只读）", systemImage: "externaldrive")
+                    }
+                    Text("可查看已有手机备份；连接并停止取景后可手动读取槽位。相机配方写入仍未开放。")
+                        .font(.footnote).foregroundStyle(.secondary)
                 }
 
                 Section("PTP/IP 客户端身份") {

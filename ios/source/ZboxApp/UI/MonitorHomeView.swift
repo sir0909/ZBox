@@ -117,7 +117,7 @@ struct MonitorHomeView: View {
                 .background(yellow, in: Capsule()).foregroundStyle(.black)
             NavigationLink { RecipeLabScreen(workbench: recipes) } label: {
                 Label("配方", systemImage: "slider.horizontal.3").font(.caption2).frame(maxWidth: .infinity)
-            }.accessibilityLabel("本地配方工作台，AI 尚未接入")
+            }.accessibilityLabel("配方工作台，AI 生成是实验功能")
             NavigationLink { STAAlbumScreen(model: model) } label: {
                 Label("相册", systemImage: "photo.on.rectangle").font(.caption2).frame(maxWidth: .infinity)
             }.disabled(!connected || !model.connectedSTA)

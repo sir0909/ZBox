@@ -51,6 +51,37 @@ actor SlotBackupStore: SlotWriteJournal {
         try handle.write(contentsOf: data)
         try handle.synchronize()
     }
+    struct Listing: Sendable {
+        let records: [SlotWriteBackup]
+        let corruptCount: Int
+        let truncated: Bool
+        let riskExists: Bool
+    }
+    /// Bounded local inspection. Invalid records remain on disk and are never exported.
+    func listBackups() throws -> Listing {
+        try ensureDirectory()
+        let urls = try FileManager.default.contentsOfDirectory(at: directory,
+            includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles])
+            .filter { $0.lastPathComponent.hasPrefix("backup-") && $0.pathExtension == "json" }
+        guard urls.count <= 10_000 else { throw Failure.tooMany }
+        let sorted = urls.sorted {
+            let left = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            let right = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            return left > right
+        }
+        var valid: [SlotWriteBackup] = []
+        var corrupt = 0
+        for url in sorted.prefix(200) {
+            do {
+                let record = try read(url)
+                guard url.lastPathComponent == "backup-\(record.id.uuidString).json" else { throw Failure.invalid }
+                _ = try encode(record) // repeat validation of size, camera, slot, payloads
+                valid.append(record)
+            } catch { corrupt += 1 }
+        }
+        return Listing(records: valid, corruptCount: corrupt, truncated: sorted.count > 200,
+                       riskExists: FileManager.default.fileExists(atPath: riskURL.path))
+    }
     func hasPendingRisk() async throws -> Bool {
         try ensureDirectory()
         // A corrupt or unreadable risk file is still a risk; never silently remove it.

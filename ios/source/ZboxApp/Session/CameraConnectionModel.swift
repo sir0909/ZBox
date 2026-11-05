@@ -32,6 +32,10 @@ final class CameraConnectionModel: ObservableObject {
     @Published private(set) var monitorBusy = false
     @Published private(set) var slotsBusy = false
     @Published private(set) var slots: [PictureControlSlot] = []
+    @Published private(set) var slotBackupMessage = "仅能备份已经存在的 614 字节槽位。"
+    let slotBackupStore: SlotBackupStore
+    init(slotBackupStore: SlotBackupStore = SlotBackupStore()) { self.slotBackupStore = slotBackupStore }
+    var canBackupSlot: Bool { !cameraGUID.isEmpty && operationPolicy.permits(.slots) }
     @Published private(set) var exposureBusy = false
     @Published private(set) var exposureRows: [DeviceRow] = []
     @Published private(set) var exposureDescriptor: ExposureDescriptor?
@@ -688,6 +692,37 @@ final class CameraConnectionModel: ObservableObject {
             }
         }
         log.add("C-1…C-9 只读扫描结束，未修改相机数据")
+    }
+
+    /// Manually reads a single occupied slot and persists it locally; never writes the camera.
+    func backupSlot(index: Int) async {
+        guard let active = session, canBackupSlot, (1...9).contains(index) else {
+            slotBackupMessage = "请连接相机、停止取景并等待其他操作完成。"; return
+        }
+        let expectedID = cameraGUID, epoch = connectionID
+        slotsBusy = true
+        slotBackupMessage = "正在读取 C-\(index) 原始记录…"
+        defer { if session === active { slotsBusy = false } }
+        let original: Data
+        do {
+            original = try await active.fetchPictureControlRaw(index: index)
+        } catch {
+            guard session === active, connectionID == epoch, appActive else { return }
+            slotBackupMessage = "读取失败或槽位不是严格 614 字节记录；未创建备份。"
+            if await active.connectionInfo == nil { await disconnect(reason: "读取槽位时连接中断，请重新连接") }
+            return
+        }
+        guard session === active, phase == .connected, appActive, connectionID == epoch,
+              cameraGUID == expectedID else { return }
+        do {
+            let backup = SlotWriteBackup(id: UUID(), cameraID: expectedID, slot: index,
+                                         original: original, proposed: original, createdAt: Date())
+            try await slotBackupStore.saveAndVerifyBackup(backup)
+            guard session === active, phase == .connected, appActive, connectionID == epoch else { return }
+            slotBackupMessage = "已保存并重读校验 C-\(index) 本地备份；没有修改相机。"
+        } catch {
+            if session === active, connectionID == epoch { slotBackupMessage = "本地备份保存或校验失败；未修改相机。" }
+        }
     }
 
     // MARK: - Explicit single autofocus during live view

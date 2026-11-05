@@ -31,6 +31,25 @@ private actor SlotWireFake: PtpIpByteChannel {
     func snapshot() -> (Int, [Data]) { (writes, packets) }
 }
 
+private actor WireTestJournal: SlotWriteJournal {
+    var backup: SlotWriteBackup?
+    var risk = false
+    func hasPendingRisk() async throws -> Bool { risk }
+    func saveAndVerifyBackup(_ backup: SlotWriteBackup) async throws { self.backup = backup }
+    func armAndVerifyRisk(_ backup: SlotWriteBackup) async throws {
+        guard self.backup == backup, !risk else { throw Failure.invalid }; risk = true
+    }
+    func clearVerifiedRisk(_ backup: SlotWriteBackup) async throws {
+        guard self.backup == backup, risk else { throw Failure.invalid }; risk = false
+    }
+    enum Failure: Error { case invalid }
+}
+private actor WireTestGate {
+    var active = true
+    func isActive() -> Bool { active }
+    func invalidate() { active = false }
+}
+
 final class ExperimentalSlotWireTests: XCTestCase {
     private func session(_ camera: SlotWireFake) async throws -> PtpIpSession {
         let s = PtpIpSession(commandChannel: camera, openEventChannel: { ScriptedChannel(FakeCamera.event) },
@@ -60,6 +79,43 @@ final class ExperimentalSlotWireTests: XCTestCase {
         } catch {}
         let (count, _) = await camera.snapshot(); XCTAssertEqual(count, 1)
         let info = await s.connectionInfo; XCTAssertNil(info)
+    }
+    func testCoordinatorAndPTPAdapterEndToEndWithFakeCamera() async throws {
+        let camera = SlotWireFake(), s = try await session(camera), j = WireTestJournal(), gate = WireTestGate()
+        let adapter = PtpSlotWriteTransport(session: s, shouldContinue: { await gate.isActive() })
+        let coordinator = SlotWriteCoordinator(transport: adapter, journal: j)
+        let identity = FakeCamera.guid.map { String(format: "%02x", $0) }.joined()
+        let candidate = try RecipePayload.edit(template: RecipePayload.linearTemplate(), name: "NEWCURVE")
+        let confirmation = try await coordinator.prepare(cameraID: identity, slot: 4, candidate: candidate)
+        let before = await camera.snapshot().0; XCTAssertEqual(before, 0)
+        let result = try await coordinator.confirm(confirmation.id)
+        let after = await camera.snapshot().0, risk = await j.risk
+        XCTAssertEqual(result, .verified); XCTAssertEqual(after, 1); XCTAssertFalse(risk)
+    }
+    func testCoordinatorLostACKStaysPendingAcrossNewInstance() async throws {
+        let camera = SlotWireFake(), s = try await session(camera), j = WireTestJournal(), gate = WireTestGate()
+        let adapter = PtpSlotWriteTransport(session: s, shouldContinue: { await gate.isActive() })
+        let coordinator = SlotWriteCoordinator(transport: adapter, journal: j)
+        let identity = FakeCamera.guid.map { String(format: "%02x", $0) }.joined()
+        let candidate = try RecipePayload.edit(template: RecipePayload.linearTemplate(), name: "NEWCURVE")
+        let confirmation = try await coordinator.prepare(cameraID: identity, slot: 4, candidate: candidate)
+        await camera.loseNextAcknowledgement()
+        let result = try await coordinator.confirm(confirmation.id)
+        let count = await camera.snapshot().0, risk = await j.risk
+        XCTAssertEqual(result, .uncertain); XCTAssertEqual(count, 1); XCTAssertTrue(risk)
+        let restarted = SlotWriteCoordinator(transport: adapter, journal: j)
+        do { _ = try await restarted.prepare(cameraID: identity, slot: 4, candidate: candidate); XCTFail("pending risk not blocked") }
+        catch { XCTAssertEqual(error as? SlotWriteCoordinator.Failure, .pendingRisk) }
+    }
+    func testInvalidatedGateBlocksBeforeAnyWrite() async throws {
+        let camera = SlotWireFake(), s = try await session(camera), j = WireTestJournal(), gate = WireTestGate()
+        let adapter = PtpSlotWriteTransport(session: s, shouldContinue: { await gate.isActive() })
+        let coordinator = SlotWriteCoordinator(transport: adapter, journal: j)
+        let identity = FakeCamera.guid.map { String(format: "%02x", $0) }.joined()
+        let confirmation = try await coordinator.prepare(cameraID: identity, slot: 4, candidate: RecipePayload.linearTemplate())
+        await gate.invalidate()
+        do { _ = try await coordinator.confirm(confirmation.id); XCTFail("inactive gate not enforced") } catch {}
+        let count = await camera.snapshot().0; XCTAssertEqual(count, 0)
     }
     func testChangedSlotBadTemplateAndCancellationNeverWrite() async throws {
         for scenario in 0...2 {

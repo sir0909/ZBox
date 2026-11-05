@@ -21,7 +21,7 @@ private func ptpString(_ text: String) -> Data {
 }
 private func advertisedDeviceInfo() -> Data {
     var d = little(UInt16(100)) + little(UInt32(10)) + little(UInt16(100)) + Data([0]) + little(UInt16(0))
-    let ops: [UInt16] = [0x1001, 0x1002, 0x1015, 0x90c1, 0x90c8, 0x920a, 0x920b]
+    let ops: [UInt16] = [0x1001, 0x1002, 0x1015, 0x90c1, 0x90c8, 0x90cc, 0x920a, 0x920b]
     d += little(UInt32(ops.count))
     for op in ops { d += little(op) }
     for _ in 0..<4 { d += little(UInt32(0)) }
@@ -72,6 +72,8 @@ private actor FakeAppCommand: PtpIpByteChannel {
             ops.append(op)
             if op == 0x1001 {
                 inbox.append(contentsOf: input(tx, advertisedDeviceInfo()))
+            } else if op == 0x90cc {
+                inbox.append(contentsOf: input(tx, RecipePayload.linearTemplate()))
             } else if op == 0x9203 {
                 inbox.append(contentsOf: input(tx, Data([0xff, 0xd8, 0xff, 0xd9])))
             } else if op == 0x1004 {
@@ -117,14 +119,16 @@ private actor FakeAppEvent: PtpIpByteChannel {
 
 @MainActor
 final class CameraLifecycleTests: XCTestCase {
-    private func makeModel(pausedOp: UInt16, pauseOccurrence: Int = 1, supportsMovie: Bool = false) async throws -> (CameraConnectionModel, FakeAppCommand, PausePoint) {
+    private func makeModel(pausedOp: UInt16, pauseOccurrence: Int = 1, supportsMovie: Bool = false,
+                           cameraID: String? = nil, backupStore: SlotBackupStore? = nil) async throws -> (CameraConnectionModel, FakeAppCommand, PausePoint) {
         let pause = PausePoint(), command = FakeAppCommand(pausedOp: pausedOp, pause: pause, pauseOccurrence: pauseOccurrence)
         let config = PtpIpSessionConfig(initiatorGuid: Data(repeating: 1, count: 16), initiatorName: "Test", staMode: true)
         let session = PtpIpSession(commandChannel: command, openEventChannel: { FakeAppEvent() }, config: config, settle: { _ in })
         _ = try await session.connect()
         _ = try await session.fetchDeviceInfo()
-        let model = CameraConnectionModel()
-        model.installSessionForTesting(session, supportsAutofocus: true, supportsMovie: supportsMovie, cameraID: supportsMovie ? "test-camera-guid" : "")
+        let model = CameraConnectionModel(slotBackupStore: backupStore ?? SlotBackupStore())
+        model.installSessionForTesting(session, supportsAutofocus: true, supportsMovie: supportsMovie,
+                                       cameraID: cameraID ?? (supportsMovie ? "test-camera-guid" : ""))
         return (model, command, pause)
     }
     private func awaitIdle(_ model: CameraConnectionModel) async throws {
@@ -320,6 +324,40 @@ final class CameraLifecycleTests: XCTestCase {
         XCTAssertFalse(ops.contains(0x920a))
         XCTAssertFalse(model.movieMayBeActive)
         XCTAssertNil(UserDefaults.standard.string(forKey: "camera.movie.mayBeActive.guid"))
+        await model.disconnect()
+    }
+    func testManualSlotBackupReadsOnceAndNeverWrites() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = SlotBackupStore(directory: folder)
+        let (model, command, pause) = try await makeModel(pausedOp: 0x90cc,
+            cameraID: String(repeating: "ab", count: 16), backupStore: store)
+        XCTAssertTrue(model.canBackupSlot)
+        let work = Task { await model.backupSlot(index: 2) }
+        await pause.untilEntered()
+        XCTAssertFalse(model.canBackupSlot)
+        await pause.release(); await work.value
+        let listing = try await store.listBackups()
+        XCTAssertEqual(listing.records.count, 1)
+        XCTAssertEqual(listing.records[0].slot, 2)
+        XCTAssertEqual(listing.records[0].original, RecipePayload.linearTemplate())
+        let ops = await command.operations()
+        XCTAssertEqual(ops.filter { $0 == 0x90cc }.count, 1)
+        XCTAssertFalse(ops.contains(0x90cd)); XCTAssertFalse(ops.contains(0x90ce))
+        await model.disconnect()
+    }
+    func testInactiveThenActiveCannotSaveStaleSlotBackup() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = SlotBackupStore(directory: folder)
+        let (model, command, pause) = try await makeModel(pausedOp: 0x90cc,
+            cameraID: String(repeating: "ab", count: 16), backupStore: store)
+        let work = Task { await model.backupSlot(index: 2) }
+        await pause.untilEntered()
+        model.appBecameInactive(); model.appBecameActive()
+        await pause.release(); await work.value
+        let listing = try await store.listBackups(); XCTAssertTrue(listing.records.isEmpty)
+        let ops = await command.operations(); XCTAssertFalse(ops.contains(0x90cd))
         await model.disconnect()
     }
     func testInactiveDuringHandshakeCannotPublishOldConnection() async throws {
