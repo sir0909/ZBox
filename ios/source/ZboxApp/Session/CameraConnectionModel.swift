@@ -48,6 +48,13 @@ final class CameraConnectionModel: ObservableObject {
     @Published private(set) var albumDownloadURL: URL?
     @Published private(set) var albumPreviewJPEG: Data?
     @Published private(set) var albumPreviewTitle = ""
+    @Published private(set) var albumThumbnailPage = 0
+    @Published private(set) var albumThumbnails: [String: Data] = [:]
+    @Published private(set) var albumThumbnailCompleted = 0
+    var currentThumbnailItems: [NikonSTAAlbumItem] {
+        guard albumThumbnailPage < albumItems.count else { return [] }
+        return Array(albumItems.dropFirst(albumThumbnailPage).prefix(ThumbnailBatch.pageSize))
+    }
     private var albumCancelRequested = false
     @Published private(set) var captureBusy = false
     @Published private(set) var captureMessage = "拍摄到机身存储卡"
@@ -208,6 +215,9 @@ final class CameraConnectionModel: ObservableObject {
         albumItems = []
         albumPreviewJPEG = nil
         albumPreviewTitle = ""
+        albumThumbnails = [:]
+        albumThumbnailPage = 0
+        albumThumbnailCompleted = 0
         albumProgress = nil
         captureBusy = false
         liveViewStopRequested = true
@@ -416,6 +426,9 @@ final class CameraConnectionModel: ObservableObject {
             connectedSTA = false
             albumBusy = false
             albumItems = []
+            albumThumbnails = [:]
+            albumThumbnailPage = 0
+            albumThumbnailCompleted = 0
             albumProgress = nil
             captureBusy = false
             pairingBusy = false
@@ -547,6 +560,9 @@ final class CameraConnectionModel: ObservableObject {
         albumItems = []
         albumPreviewJPEG = nil
         albumPreviewTitle = ""
+        albumThumbnails = [:]
+        albumThumbnailPage = 0
+        albumThumbnailCompleted = 0
         albumMessage = "正在读取存储和元数据…"
         defer { if session === active { albumBusy = false } }
         do {
@@ -577,7 +593,92 @@ final class CameraConnectionModel: ObservableObject {
         }
     }
 
-    /// Read a bounded prefix and, when TIFF explicitly identifies it, one bounded JPEG range.
+    /// Each thumbnail reads only a bounded prefix and at most one validated-size range.
+    private func readSTAThumbnail(_ item: NikonSTAAlbumItem, active: PtpIpSession) async throws -> Data? {
+        let size = try await active.fetchNikonSTAObjectSize(handle: item.handle)
+        guard mayContinueAlbum(active) else { throw CancellationError() }
+        let limit = Int(min(size, UInt64(EmbeddedJPEG.maxPrefixBytes)))
+        guard limit > 0 else { return nil }
+        var prefix = Data()
+        while prefix.count < limit {
+            guard mayContinueAlbum(active) else { throw CancellationError() }
+            let chunk = try await active.fetchNikonSTAPartial(handle: item.handle, offset: UInt64(prefix.count), length: limit - prefix.count)
+            guard mayContinueAlbum(active) else { throw CancellationError() }
+            prefix.append(chunk)
+        }
+        var jpeg = EmbeddedJPEG.largestComplete(in: prefix)
+        let ranges = [TIFFPreviewRange.largest(in: prefix, fileSize: size),
+                      NikonPreviewRange.largest(in: prefix, fileSize: size)].compactMap { $0 }
+        let largest = ranges.max { ($0.upperBound - $0.lowerBound) < ($1.upperBound - $1.lowerBound) }
+        if let range = largest, range.upperBound - range.lowerBound > UInt64(jpeg?.count ?? 0) {
+            var candidate = Data()
+            let expected = Int(range.upperBound - range.lowerBound)
+            while candidate.count < expected {
+                guard mayContinueAlbum(active) else { throw CancellationError() }
+                let chunk = try await active.fetchNikonSTAPartial(handle: item.handle,
+                    offset: range.lowerBound + UInt64(candidate.count), length: expected - candidate.count)
+                guard mayContinueAlbum(active) else { throw CancellationError() }
+                candidate.append(chunk)
+            }
+            if candidate.count >= 5, candidate.starts(with: [0xff, 0xd8]), candidate.suffix(2) == Data([0xff, 0xd9]) {
+                jpeg = candidate
+            }
+        }
+        return jpeg
+    }
+
+    private func storeThumbnail(_ item: NikonSTAAlbumItem, data: Data?, active: PtpIpSession, total: Int) {
+        guard mayContinueAlbum(active) else { return }
+        if let data { albumThumbnails[item.id] = data }
+        albumThumbnailCompleted += 1
+        albumMessage = "缩略图：\(albumThumbnailCompleted)/\(total)；不可读项目保留占位"
+    }
+
+    func loadThumbnailPage(start: Int, automatic: Bool = false) async {
+        guard !(automatic && albumCancelRequested), let active = session, phase == .connected, connectedSTA, !albumBusy,
+              !liveViewBusy, !batteryBusy, !slotsBusy, !monitorBusy, !exposureBusy,
+              !pairingBusy, !pairingPrepared, !captureBusy,
+              start >= 0, start < albumItems.count, start % ThumbnailBatch.pageSize == 0 else { return }
+        albumBusy = true
+        albumCancelRequested = false
+        albumThumbnailPage = start
+        albumThumbnailCompleted = 0
+        albumThumbnails = [:] // bounded to one page
+        let page = currentThumbnailItems
+        albumMessage = "正在加载本页缩略图…"
+        defer { if session === active { albumBusy = false } }
+        do {
+            try await ThumbnailBatch.run(page, shouldContinue: { [weak self, weak active] in
+                guard let self, let active else { return false }
+                return await self.mayContinueAlbum(active)
+            }, fetch: { [weak self, weak active] item in
+                guard let self, let active else { throw CancellationError() }
+                do { return try await self.readSTAThumbnail(item, active: active) }
+                catch PtpIpSessionError.operationFailed { return nil }
+            }, receive: { [weak self, weak active] item, data in
+                guard let self, let active else { return }
+                await self.storeThumbnail(item, data: data, active: active, total: page.count)
+            })
+            guard mayContinueAlbum(active) else { return }
+            albumMessage = "本页缩略图已读取；无法预览的文件仍可尝试下载"
+        } catch is CancellationError {
+            if session === active { albumMessage = "缩略图读取已取消" }
+        } catch {
+            guard session === active, phase == .connected else { return }
+            albumMessage = "缩略图读取异常，连接已关闭：\(describe(error))"
+            await disconnect(reason: albumMessage)
+        }
+    }
+
+    var mayAutoLoadThumbnails: Bool { phase == .connected && !albumCancelRequested }
+
+    func showCachedPreview(_ item: NikonSTAAlbumItem) {
+        guard !albumBusy, let data = albumThumbnails[item.id], albumItems.contains(item) else { return }
+        albumPreviewTitle = item.placeholderName
+        albumPreviewJPEG = data
+        albumMessage = "已显示本页缓存预览；若不可解码，请下载原文件查看"
+    }
+
     func previewSTAItem(_ item: NikonSTAAlbumItem) async {
         guard let active = session, phase == .connected, connectedSTA, !albumBusy,
               !liveViewBusy, !batteryBusy, !slotsBusy, !monitorBusy, !exposureBusy,
@@ -586,41 +687,13 @@ final class CameraConnectionModel: ObservableObject {
         albumCancelRequested = false
         albumPreviewJPEG = nil
         albumPreviewTitle = item.placeholderName
-        albumMessage = "正在读取受限文件头预览…"
+        albumMessage = "正在读取受限预览…"
         defer { if session === active { albumBusy = false } }
         do {
-            let size = try await active.fetchNikonSTAObjectSize(handle: item.handle)
-            guard session === active, phase == .connected, !albumCancelRequested else { throw CancellationError() }
-            let limit = Int(min(size, UInt64(EmbeddedJPEG.maxPrefixBytes)))
-            guard limit > 0 else { albumMessage = "文件大小未知，无法预览"; return }
-            var prefix = Data()
-            while prefix.count < limit {
-                guard session === active, phase == .connected, !albumCancelRequested else { throw CancellationError() }
-                let chunk = try await active.fetchNikonSTAPartial(handle: item.handle, offset: UInt64(prefix.count), length: limit - prefix.count)
-                guard session === active, phase == .connected, !albumCancelRequested else { throw CancellationError() }
-                prefix.append(chunk)
-            }
-            var jpeg = EmbeddedJPEG.largestComplete(in: prefix)
-            let ranges = [TIFFPreviewRange.largest(in: prefix, fileSize: size),
-                          NikonPreviewRange.largest(in: prefix, fileSize: size)].compactMap { $0 }
-            let largest = ranges.max { ($0.upperBound - $0.lowerBound) < ($1.upperBound - $1.lowerBound) }
-            if let range = largest, range.upperBound - range.lowerBound > UInt64(jpeg?.count ?? 0) {
-                var candidate = Data()
-                let expected = Int(range.upperBound - range.lowerBound)
-                while candidate.count < expected {
-                    guard session === active, phase == .connected, !albumCancelRequested else { throw CancellationError() }
-                    let offset = range.lowerBound + UInt64(candidate.count)
-                    let chunk = try await active.fetchNikonSTAPartial(handle: item.handle, offset: offset, length: expected - candidate.count)
-                    guard session === active, phase == .connected, !albumCancelRequested else { throw CancellationError() }
-                    candidate.append(chunk)
-                }
-                if candidate.count >= 5, candidate.starts(with: [0xff, 0xd8]), candidate.suffix(2) == Data([0xff, 0xd9]) {
-                    jpeg = candidate
-                }
-            }
-            guard let jpeg else {
+            guard let jpeg = try await readSTAThumbnail(item, active: active) else {
                 albumMessage = "未找到完整内嵌 JPEG；可选择下载原文件"; return
             }
+            guard mayContinueAlbum(active) else { throw CancellationError() }
             albumPreviewJPEG = jpeg
             albumMessage = "已读取内嵌 JPEG 标记；若图片不可解码，请下载原文件查看"
         } catch is CancellationError {

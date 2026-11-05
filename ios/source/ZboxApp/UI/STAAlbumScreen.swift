@@ -8,8 +8,10 @@ struct STAAlbumScreen: View {
     @ObservedObject var model: CameraConnectionModel
     @State private var selected: NikonSTAAlbumItem?
     @State private var confirming = false
+    @State private var isVisible = false
+    @Environment(\.scenePhase) private var scenePhase
 
-    private func thumbnail(_ data: Data) -> UIImage? {
+    private func thumbnail(_ data: Data, maxPixel: Int = 800) -> UIImage? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               let info = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let width = info[kCGImagePropertyPixelWidth] as? Int,
@@ -17,7 +19,7 @@ struct STAAlbumScreen: View {
               width > 0, height > 0, width <= 10_000, height <= 10_000,
               Int64(width) * Int64(height) <= 80_000_000 else { return nil }
         let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
-                                         kCGImageSourceThumbnailMaxPixelSize: 800,
+                                         kCGImageSourceThumbnailMaxPixelSize: maxPixel,
                                          kCGImageSourceCreateThumbnailWithTransform: true]
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
         return UIImage(cgImage: image)
@@ -27,7 +29,12 @@ struct STAAlbumScreen: View {
         List {
             Section("Nikon STA 相册") {
                 Button(model.albumBusy ? "相机处理中…" : "读取相册列表") {
-                    Task { await model.loadSTAAlbum() }
+                    Task {
+                        await model.loadSTAAlbum()
+                        if isVisible, scenePhase == .active, model.mayAutoLoadThumbnails, !model.albumItems.isEmpty {
+                            await model.loadThumbnailPage(start: 0, automatic: true)
+                        }
+                    }
                 }
                 .disabled(model.albumBusy || !model.connectedSTA || model.liveViewBusy ||
                           model.batteryBusy || model.slotsBusy || model.exposureBusy ||
@@ -55,20 +62,47 @@ struct STAAlbumScreen: View {
                 }
             }
             Section("媒体（最多展示 500 项）") {
-                ForEach(model.albumItems) { item in
+                if !model.albumItems.isEmpty {
                     HStack {
-                        Image(systemName: item.kind == .raw ? "camera" : (item.kind == .jpeg ? "photo" : "video"))
-                            .frame(width: 28)
-                        VStack(alignment: .leading) {
-                            Text(item.placeholderName)
-                            Text(item.capturedAt ?? "拍摄时间未知").font(.caption).foregroundStyle(.secondary)
-                        }
+                        Button("上一页") {
+                            Task { await model.loadThumbnailPage(start: model.albumThumbnailPage - ThumbnailBatch.pageSize) }
+                        }.disabled(model.albumBusy || model.albumThumbnailPage == 0)
                         Spacer()
-                        Button("预览") { Task { await model.previewSTAItem(item) } }
-                        Button("下载") { selected = item; confirming = true }
+                        Text("\(model.albumThumbnailPage + 1)–\(min(model.albumThumbnailPage + ThumbnailBatch.pageSize, model.albumItems.count)) / \(model.albumItems.count)")
+                            .font(.caption.monospacedDigit())
+                        Spacer()
+                        Button("下一页") {
+                            Task { await model.loadThumbnailPage(start: model.albumThumbnailPage + ThumbnailBatch.pageSize) }
+                        }.disabled(model.albumBusy || model.albumThumbnailPage + ThumbnailBatch.pageSize >= model.albumItems.count)
                     }
-                    .buttonStyle(.borderless)
-                    .disabled(model.albumBusy || model.liveViewBusy || model.captureBusy || model.exposureBusy || model.batteryBusy || model.slotsBusy || model.monitorBusy || model.pairingBusy || model.pairingPrepared || model.phase != .connected)
+                    Button("重新加载本页缩略图") {
+                        Task { await model.loadThumbnailPage(start: model.albumThumbnailPage) }
+                    }.disabled(model.albumBusy)
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 125), spacing: 12)], spacing: 12) {
+                        ForEach(model.currentThumbnailItems) { item in
+                            VStack(alignment: .leading, spacing: 6) {
+                                Button {
+                                    if model.albumThumbnails[item.id] != nil { model.showCachedPreview(item) }
+                                    else { Task { await model.previewSTAItem(item) } }
+                                } label: {
+                                    ZStack {
+                                        RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.12))
+                                        if let bytes = model.albumThumbnails[item.id], let image = thumbnail(bytes, maxPixel: 220) {
+                                            Image(uiImage: image).resizable().scaledToFit().clipShape(RoundedRectangle(cornerRadius: 8))
+                                        } else {
+                                            Image(systemName: item.kind == .raw ? "camera" : (item.kind == .jpeg ? "photo" : "video"))
+                                                .font(.title).foregroundStyle(.secondary)
+                                        }
+                                    }.frame(height: 100)
+                                }
+                                Text(item.placeholderName).font(.caption2).lineLimit(1)
+                                Text(item.capturedAt ?? "时间未知").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                                Button("下载") { selected = item; confirming = true }.font(.caption)
+                            }
+                            .buttonStyle(.borderless)
+                            .disabled(model.albumBusy || model.liveViewBusy || model.captureBusy || model.exposureBusy || model.batteryBusy || model.slotsBusy || model.monitorBusy || model.pairingBusy || model.pairingPrepared || model.phase != .connected)
+                        }
+                    }
                 }
             }
         }
@@ -81,6 +115,7 @@ struct STAAlbumScreen: View {
         } message: {
             Text("将读取完整原文件；需足够空间和稳定连接。文件名为占位名，完成后请分享保存。")
         }
-        .onDisappear { model.cancelAlbumWork() }
+        .onAppear { isVisible = true }
+        .onDisappear { isVisible = false; model.cancelAlbumWork() }
     }
 }
