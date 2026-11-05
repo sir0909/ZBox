@@ -28,6 +28,7 @@ public enum PtpOpCode {
     public static let nikonAutofocus: UInt16 = 0x90C1
     public static let nikonDeviceReady: UInt16 = 0x90C8
     public static let nikonGetPictureControl: UInt16 = 0x90CC
+    static let nikonSetPictureControl: UInt16 = 0x90CD
     public static let nikonStartLiveView: UInt16 = 0x9201
     public static let nikonEndLiveView: UInt16 = 0x9202
     public static let nikonChangeAfArea: UInt16 = 0x9205

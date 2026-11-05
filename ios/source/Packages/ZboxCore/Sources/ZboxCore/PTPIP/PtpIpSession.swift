@@ -523,6 +523,70 @@ public actor PtpIpSession {
         return PictureControlSlot.decode(index: index, responseCode: result.response.code, data: result.data)
     }
 
+    /// Internal experimental transport primitive, intentionally not connected to the app.
+    /// The caller must already have a verified backup, user confirmation, durable risk and
+    /// an application-wide operation gate. GUID is not cryptographic authentication.
+    /// Under the wire lock, rechecks the full original before sending one 0x90CD only.
+    func experimentalSetPictureControlOnce(index: Int, expectedGUID: Data, original: Data, target: Data,
+        shouldContinue: @escaping @Sendable () async -> Bool) async throws {
+        guard (1...9).contains(index), expectedGUID.count == 16, expectedGUID.contains(where: { $0 != 0 }) else {
+            throw ExperimentalSlotWriteError.invalid
+        }
+        _ = try PictureControl614.parse(original)
+        guard try PictureControl614.parse(target).curveIsNondecreasing else { throw ExperimentalSlotWriteError.invalid }
+        // The primitive itself enforces the same limited edit boundary as the coordinator.
+        let before = [UInt8](original), after = [UInt8](target)
+        for i in 0..<614 where !(2..<22).contains(i) && !(0x2f..<0x37).contains(i) && !(0x66..<0x266).contains(i) {
+            guard before[i] == after[i] else { throw ExperimentalSlotWriteError.invalid }
+        }
+        guard connectionInfo != nil else { throw PtpIpSessionError.notConnected }
+        let generation = sessionGeneration
+        try await lock.withLock { [self] in
+            try await self.experimentalSlotWriteWhileLocked(index: index, expectedGUID: expectedGUID,
+                original: original, target: target, generation: generation, shouldContinue: shouldContinue)
+        }
+    }
+    private func experimentalSlotWriteWhileLocked(index: Int, expectedGUID: Data, original: Data, target: Data,
+        generation: UInt64, shouldContinue: @Sendable () async -> Bool) async throws {
+        do {
+            try await performExperimentalSlotWrite(index: index, expectedGUID: expectedGUID,
+                original: original, target: target, generation: generation, shouldContinue: shouldContinue)
+        } catch let error as ExperimentalSlotWriteError { throw error }
+        catch PtpIpSessionError.operationFailed(let code, let op) { throw PtpIpSessionError.operationFailed(code: code, opCode: op) }
+        catch {
+            // A broken/incomplete transaction poisons the stream and may have written.
+            if sessionGeneration == generation { await close() }
+            throw error
+        }
+    }
+    private func performExperimentalSlotWrite(index: Int, expectedGUID: Data, original: Data, target: Data,
+        generation: UInt64, shouldContinue: @Sendable () async -> Bool) async throws {
+        func ensureSession() throws {
+            guard let info = connectionInfo, sessionGeneration == generation, info.cameraGuid == expectedGUID else {
+                throw PtpIpSessionError.notConnected
+            }
+        }
+        try ensureSession()
+        guard let device = deviceInfo, device.isNikon,
+              device.model.uppercased().filter({ !$0.isWhitespace }) == "Z30",
+              device.operations.contains(PtpOpCode.nikonGetPictureControl),
+              device.operations.contains(PtpOpCode.nikonSetPictureControl) else { throw ExperimentalSlotWriteError.unsupported }
+        guard await shouldContinue() else { throw ExperimentalSlotWriteError.cancelled }
+        try ensureSession()
+        let params: [UInt32] = [UInt32(0x00c8 + index), 0]
+        let current = try await runOperation(opCode: PtpOpCode.nikonGetPictureControl, params: params,
+                                             expectData: true, timeout: 6, maxDataBytes: 614)
+        try ensureSession()
+        guard current.response.isOK else { throw PtpIpSessionError.operationFailed(code: current.response.code, opCode: PtpOpCode.nikonGetPictureControl) }
+        guard current.data == original else { throw ExperimentalSlotWriteError.slotChanged }
+        guard await shouldContinue() else { throw ExperimentalSlotWriteError.cancelled }
+        try ensureSession()
+        let result = try await runOperation(opCode: PtpOpCode.nikonSetPictureControl, params: params,
+                                            expectData: false, timeout: 10, maxDataBytes: 0, dataOut: target)
+        try ensureSession()
+        guard result.response.isOK else { throw PtpIpSessionError.operationFailed(code: result.response.code, opCode: PtpOpCode.nikonSetPictureControl) }
+    }
+
     private func runOperation(
         opCode: UInt16,
         params: [UInt32],
@@ -650,3 +714,6 @@ public actor PtpIpSession {
         }
     }
 }
+
+/// Only used by an internal, UI-disconnected experiment; no camera compatibility claim.
+enum ExperimentalSlotWriteError: Error, Equatable { case invalid, unsupported, cancelled, slotChanged }
