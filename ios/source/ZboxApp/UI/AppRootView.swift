@@ -84,6 +84,14 @@ struct AppRootView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                Section("USB（实验）") {
+                    NavigationLink { USBDiscoveryScreen() } label: {
+                        Label("发现本地相机设备", systemImage: "cable.connector")
+                    }
+                    Text("仅手动发现候选，尚不支持 USB 连接或控制。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+
                 if model.needsRecovery {
                     Section("需要恢复配对") {
                         Text("相机拒绝了当前客户端身份。常见于重装应用或更换客户端名称后。请在相机菜单「连接到计算机 → 配对」重新配对一次；若仍失败，可在下方恢复或重置 GUID。")
