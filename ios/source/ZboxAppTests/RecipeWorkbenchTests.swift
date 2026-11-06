@@ -50,7 +50,7 @@ final class RecipeWorkbenchTests: XCTestCase {
         XCTAssertEqual(try workbench.previewLUT(), values)
         XCTAssertNotEqual(try CurveLUT.make(workbench.points), values)
         workbench.setPoint(2, y: 150)
-        XCTAssertEqual(try workbench.previewLUT(), CurveLUT.make(workbench.points))
+        XCTAssertEqual(try workbench.previewLUT(), try CurveLUT.make(workbench.points))
     }
 
 }
