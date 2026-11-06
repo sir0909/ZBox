@@ -10,6 +10,7 @@ struct LiveViewScreen: View {
     @State private var orientationMessage = ""
     @State private var hostingWindow: UIWindow?
     @State private var attemptedAutoRotation = false
+    @State private var showingPoseReference = false
 
     private func toggleLandscape() {
         guard let window = hostingWindow else {
@@ -85,6 +86,7 @@ struct LiveViewScreen: View {
             Button(model.focusBusy ? "对焦中…" : "单次 AF") { Task { await model.autofocusOnce() } }
                 .disabled(!model.canAutofocus).buttonStyle(.bordered)
             Text(model.focusMessage).font(.caption2).foregroundStyle(.white.opacity(0.7))
+            Button("姿势参考与话术") { showingPoseReference = true }.buttonStyle(.bordered)
             MovieControls(model: model, compact: true)
             HStack {
                 NavigationLink { ExposureEditorScreen(model: model) } label: {
@@ -111,6 +113,7 @@ struct LiveViewScreen: View {
                 Button("停取景") { Task { await model.stopLiveView() } }.disabled(model.liveViewPhase == .stopping)
             }
             Button("单次 AF") { Task { await model.autofocusOnce() } }.disabled(!model.canAutofocus)
+            Button("姿势参考") { showingPoseReference = true }
             MovieControls(model: model, compact: true)
             Spacer(minLength: 0)
             Text("LIVE · \(model.liveViewFrames)").font(.caption2.monospacedDigit())
@@ -151,6 +154,7 @@ struct LiveViewScreen: View {
             }
         }
         .background(OrientationWindowReader(window: $hostingWindow).frame(width: 0, height: 0))
+        .sheet(isPresented: $showingPoseReference) { PoseReferenceScreen() }
         .statusBarHidden(landscapeRequested)
         .navigationBarBackButtonHidden(true)
         .toolbar(.hidden, for: .navigationBar)

@@ -8,6 +8,7 @@ struct MonitorHomeView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var confirmCapture = false
     @State private var fullScreen = false
+    @State private var showingPoseReference = false
     @AppStorage("appearance.light") private var lightTheme = false
     private let yellow = Color(red: 1, green: 0.90, blue: 0)
 
@@ -92,6 +93,8 @@ struct MonitorHomeView: View {
             Text(model.movieMessage).font(.caption2).foregroundStyle(model.movieMayBeActive ? Color.orange : Color.gray)
             Text("\(model.focusMessage) · AF 为实验功能；AI 构图尚未实现")
                 .font(.caption2).foregroundStyle(.secondary)
+            Button("姿势参考与话术", systemImage: "figure.stand") { showingPoseReference = true }
+                .font(.caption).buttonStyle(.bordered)
             HStack {
                 NavigationLink { ExposureEditorScreen(model: model) } label: { Label("曝光", systemImage: "slider.horizontal.3") }
                     .frame(width: 64).disabled(!connected)
@@ -190,6 +193,7 @@ struct MonitorHomeView: View {
             .preferredColorScheme(lightTheme ? .light : .dark)
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(isPresented: $fullScreen) { LiveViewScreen(model: model) }
+            .sheet(isPresented: $showingPoseReference) { PoseReferenceScreen() }
             .confirmationDialog("拍摄一张照片到相机存储卡？", isPresented: $confirmCapture, titleVisibility: .visible) {
                 Button("确认拍摄") { Task { await model.captureOneToCard() } }
                 Button("取消", role: .cancel) {}
