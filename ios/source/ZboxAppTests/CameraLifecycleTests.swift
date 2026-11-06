@@ -59,6 +59,8 @@ private actor FakeAppCommand: PtpIpByteChannel {
     private var inbox: [Data] = []
     private var ops: [UInt16] = []
     private(set) var closed = false
+    private var slotPayload = RecipePayload.linearTemplate()
+    func setSlotPayload(_ data: Data) { slotPayload = data }
     init(pausedOp: UInt16, pause: PausePoint, pauseOccurrence: Int) {
         self.pausedOp = pausedOp; self.pause = pause; self.pauseOccurrence = pauseOccurrence
     }
@@ -73,7 +75,7 @@ private actor FakeAppCommand: PtpIpByteChannel {
             if op == 0x1001 {
                 inbox.append(contentsOf: input(tx, advertisedDeviceInfo()))
             } else if op == 0x90cc {
-                inbox.append(contentsOf: input(tx, RecipePayload.linearTemplate()))
+                inbox.append(contentsOf: input(tx, slotPayload))
             } else if op == 0x9203 {
                 inbox.append(contentsOf: input(tx, Data([0xff, 0xd8, 0xff, 0xd9])))
             } else if op == 0x1004 {
@@ -359,6 +361,72 @@ final class CameraLifecycleTests: XCTestCase {
         let listing = try await store.listBackups(); XCTAssertTrue(listing.records.isEmpty)
         let ops = await command.operations(); XCTAssertFalse(ops.contains(0x90cd))
         await model.disconnect()
+    }
+    private func armSlotRisk(_ store: SlotBackupStore) async throws -> SlotWriteBackup {
+        let original = RecipePayload.linearTemplate()
+        let proposed = try RecipePayload.edit(template: original, name: "NEXT")
+        let backup = SlotWriteBackup(id: UUID(), cameraID: String(repeating: "ab", count: 16),
+                                     slot: 2, original: original, proposed: proposed, createdAt: Date())
+        try await store.saveAndVerifyBackup(backup)
+        try await store.armAndVerifyRisk(backup)
+        return backup
+    }
+    func testReadOnlyRiskReviewNeedsConfirmationAndTwoReads() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = SlotBackupStore(directory: folder); let backup = try await armSlotRisk(store)
+        let (model, command, pause) = try await makeModel(pausedOp: 0x90cc, pauseOccurrence: 1,
+            cameraID: backup.cameraID, backupStore: store)
+        let check = Task { await model.inspectSlotRisk() }; await pause.untilEntered(); await pause.release(); await check.value
+        XCTAssertEqual(model.slotRecoveryReview?.match, .original)
+        let before = try await store.hasPendingRisk(); XCTAssertTrue(before)
+        await model.confirmSlotRiskReview()
+        let after = try await store.hasPendingRisk(); XCTAssertFalse(after)
+        let listing = try await store.listBackups(); XCTAssertEqual(listing.records.count, 1)
+        let ops = await command.operations(); XCTAssertEqual(ops.filter { $0 == 0x90cc }.count, 2)
+        XCTAssertFalse(ops.contains(0x90cd)); XCTAssertFalse(ops.contains(0x90ce))
+        await model.disconnect()
+    }
+    func testRiskReviewInvalidatedByBackgroundEvenAfterForeground() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = SlotBackupStore(directory: folder); let backup = try await armSlotRisk(store)
+        let (model, command, pause) = try await makeModel(pausedOp: 0x90cc, pauseOccurrence: 1,
+            cameraID: backup.cameraID, backupStore: store)
+        let check = Task { await model.inspectSlotRisk() }; await pause.untilEntered(); await pause.release(); await check.value
+        XCTAssertNotNil(model.slotRecoveryReview)
+        model.appBecameInactive(); model.appBecameActive()
+        XCTAssertNil(model.slotRecoveryReview)
+        await model.confirmSlotRiskReview()
+        let pending = try await store.hasPendingRisk(); XCTAssertTrue(pending)
+        let ops = await command.operations(); XCTAssertEqual(ops.filter { $0 == 0x90cc }.count, 1)
+        XCTAssertFalse(ops.contains(0x90cd)); await model.disconnect()
+    }
+    func testRiskReviewChangedSlotNeverClearsMarker() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = SlotBackupStore(directory: folder); let backup = try await armSlotRisk(store)
+        let (model, command, pause) = try await makeModel(pausedOp: 0x90cc, pauseOccurrence: 1,
+            cameraID: backup.cameraID, backupStore: store)
+        let check = Task { await model.inspectSlotRisk() }; await pause.untilEntered(); await pause.release(); await check.value
+        await command.setSlotPayload(backup.proposed)
+        await model.confirmSlotRiskReview()
+        let pending = try await store.hasPendingRisk(); XCTAssertTrue(pending)
+        let ops = await command.operations(); XCTAssertEqual(ops.filter { $0 == 0x90cc }.count, 2)
+        XCTAssertFalse(ops.contains(0x90cd)); await model.disconnect()
+    }
+    func testBackgroundDuringFinalRiskReadCannotClearMarker() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = SlotBackupStore(directory: folder); let backup = try await armSlotRisk(store)
+        let (model, command, pause) = try await makeModel(pausedOp: 0x90cc, pauseOccurrence: 2,
+            cameraID: backup.cameraID, backupStore: store)
+        await model.inspectSlotRisk(); XCTAssertNotNil(model.slotRecoveryReview)
+        let finalRead = Task { await model.confirmSlotRiskReview() }
+        await pause.untilEntered(); model.appBecameInactive(); model.appBecameActive()
+        await pause.release(); await finalRead.value
+        let pending = try await store.hasPendingRisk(); XCTAssertTrue(pending)
+        let ops = await command.operations(); XCTAssertFalse(ops.contains(0x90cd)); await model.disconnect()
     }
     func testInactiveDuringHandshakeCannotPublishOldConnection() async throws {
         let pause = PausePoint(), command = FakeAppCommand(pausedOp: 0x1002, pause: pause, pauseOccurrence: 1)

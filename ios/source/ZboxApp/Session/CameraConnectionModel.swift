@@ -33,6 +33,10 @@ final class CameraConnectionModel: ObservableObject {
     @Published private(set) var slotsBusy = false
     @Published private(set) var slots: [PictureControlSlot] = []
     @Published private(set) var slotBackupMessage = "仅能备份已经存在的 614 字节槽位。"
+    @Published private(set) var slotRecoveryReview: SlotRecoveryConfirmation?
+    @Published private(set) var slotRecoveryMessage = "如有未决风险，可连接原机身后进行只读核对。"
+    private var slotRecovery: SlotWriteRecovery?
+    private var slotRecoveryAttempt = UUID()
     let slotBackupStore: SlotBackupStore
     init(slotBackupStore: SlotBackupStore = SlotBackupStore()) { self.slotBackupStore = slotBackupStore }
     var canBackupSlot: Bool { !cameraGUID.isEmpty && operationPolicy.permits(.slots) }
@@ -159,6 +163,7 @@ final class CameraConnectionModel: ObservableObject {
         appActive = false
         discoveryID = UUID()
         connectionID = UUID()
+        discardSlotRecovery()
         if phase == .scanning { phase = .idle; statusMessage = "扫描已取消（应用不活跃）" }
         if phase == .connecting { statusMessage = "连接已取消，等待握手安全结束…" }
         cancelAlbumWork()
@@ -305,6 +310,7 @@ final class CameraConnectionModel: ObservableObject {
         // iOS may suspend the app before cleanup finishes; camera state is not guaranteed.
         guard phase != .disconnecting else { return }
         connectionID = UUID(); discoveryID = UUID()
+        discardSlotRecovery()
         let wasCapturing = captureBusy
         let wasWritingExposure = exposureWriteInProgress
         exposureWriteCancelled = true
@@ -723,6 +729,76 @@ final class CameraConnectionModel: ObservableObject {
             slotBackupMessage = "已保存并重读校验 C-\(index) 本地备份；没有修改相机。"
         } catch {
             if session === active, connectionID == epoch { slotBackupMessage = "本地备份保存或校验失败；未修改相机。" }
+        }
+    }
+
+    // MARK: - Read-only, explicitly confirmed pending-risk review
+
+    /// Invalidate even a still-running inspect task. A later foreground cannot revive it.
+    func discardSlotRecovery() {
+        slotRecoveryAttempt = UUID()
+        slotRecoveryReview = nil
+        let old = slotRecovery; slotRecovery = nil
+        if let old { Task { await old.cancel() } }
+    }
+    private func mayReviewSlotRisk(_ active: PtpIpSession, epoch: UUID, cameraID: String, attempt: UUID) -> Bool {
+        session === active && phase == .connected && appActive && connectionID == epoch &&
+        cameraGUID == cameraID && slotRecoveryAttempt == attempt && slotsBusy &&
+        liveViewPhase == .idle && !pairingPrepared && !movieMayBeActive
+    }
+    func inspectSlotRisk() async {
+        guard let active = session, canBackupSlot else {
+            slotRecoveryMessage = "请连接原机身、停止取景并等待其他操作结束。"; return
+        }
+        discardSlotRecovery()
+        let epoch = connectionID, cameraID = cameraGUID, attempt = slotRecoveryAttempt
+        slotsBusy = true
+        slotRecoveryMessage = "正在只读核对风险记录和机身槽位…"
+        let adapter = SlotRecoveryReadTransport(session: active, allowed: { [weak self, weak active] in
+            guard let self, let active else { return false }
+            return await self.mayReviewSlotRisk(active, epoch: epoch, cameraID: cameraID, attempt: attempt)
+        })
+        let recovery = SlotWriteRecovery(transport: adapter, journal: slotBackupStore)
+        slotRecovery = recovery
+        defer { if session === active { slotsBusy = false } }
+        do {
+            let review = try await recovery.inspect()
+            guard mayReviewSlotRisk(active, epoch: epoch, cameraID: cameraID, attempt: attempt) else {
+                await recovery.cancel(); return
+            }
+            slotRecoveryReview = review
+            slotRecoveryMessage = "已读取匹配结果；请检查原机身并决定是否继续。"
+        } catch {
+            guard mayReviewSlotRisk(active, epoch: epoch, cameraID: cameraID, attempt: attempt) else { return }
+            slotRecovery = nil
+            slotRecoveryMessage = "无法安全核对：风险/备份损坏、机身不符或槽位内容不匹配。风险保持，未修改相机。"
+            if await active.connectionInfo == nil { await disconnect(reason: "核对槽位时连接中断，请重新连接") }
+        }
+    }
+    /// Called only after the user has been shown the slot and match and explicitly agrees.
+    func confirmSlotRiskReview() async {
+        guard let active = session, let review = slotRecoveryReview, let recovery = slotRecovery, canBackupSlot else {
+            slotRecoveryMessage = "核对已取消或相机当前忙碌；风险未解除。"; return
+        }
+        let epoch = connectionID, cameraID = cameraGUID, attempt = slotRecoveryAttempt
+        guard review.cameraID == cameraID else { discardSlotRecovery(); return }
+        slotsBusy = true
+        slotRecoveryReview = nil // one-shot confirmation
+        slotRecoveryMessage = "正在再次只读核对…"
+        defer {
+            if session === active { slotsBusy = false }
+            if slotRecoveryAttempt == attempt { slotRecovery = nil }
+        }
+        do {
+            let match = try await recovery.confirm(review.id)
+            guard mayReviewSlotRisk(active, epoch: epoch, cameraID: cameraID, attempt: attempt) else { return }
+            slotRecoveryMessage = match == .original
+                ? "再次核对与原备份一致，已解除风险标记；这不证明此前命令未执行。"
+                : "再次核对与目标记录一致，已解除风险标记；请检查机身。"
+        } catch {
+            guard mayReviewSlotRisk(active, epoch: epoch, cameraID: cameraID, attempt: attempt) else { return }
+            slotRecoveryMessage = "二次核对未完成或槽位已变化；风险保留，未发送写命令。"
+            if await active.connectionInfo == nil { await disconnect(reason: "核对槽位时连接中断，请重新连接") }
         }
     }
 

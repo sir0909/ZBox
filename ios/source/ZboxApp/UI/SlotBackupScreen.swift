@@ -12,6 +12,7 @@ struct SlotBackupScreen: View {
     @State private var exportDocument: RecipeDocument?
     @State private var exportName = ""
     @State private var exporting = false
+    @State private var showRiskReview = false
 
     var body: some View {
         List {
@@ -28,8 +29,16 @@ struct SlotBackupScreen: View {
             }
             Section("本地备份") {
                 if riskExists {
-                    Text("检测到未决写入风险记录；请保留备份并检查机身。恢复流程尚未开放。")
+                    Text("检测到未决写入风险记录；请保留备份并检查原机身。")
                         .foregroundStyle(.orange)
+                    Button("只读核对未决风险") {
+                        Task {
+                            await model.inspectSlotRisk()
+                            if model.slotRecoveryReview != nil { showRiskReview = true }
+                            await reload()
+                        }
+                    }.disabled(!model.canBackupSlot)
+                    Text(model.slotRecoveryMessage).font(.footnote).foregroundStyle(.secondary)
                 }
                 if !warning.isEmpty { Text(warning).foregroundStyle(.orange).font(.footnote) }
                 if records.isEmpty { Text("暂无可验证的本地备份").foregroundStyle(.secondary) }
@@ -53,6 +62,20 @@ struct SlotBackupScreen: View {
         }
         .navigationTitle("槽位备份（只读）")
         .task { await reload() }
+        .onDisappear { model.discardSlotRecovery() }
+        .confirmationDialog("确认已检查原机身？", isPresented: $showRiskReview, titleVisibility: .visible) {
+            Button("已检查，重新读取并解除风险标记", role: .destructive) {
+                Task { await model.confirmSlotRiskReview(); await reload() }
+            }
+            Button("取消，保留风险", role: .cancel) { model.discardSlotRecovery() }
+        } message: {
+            if let review = model.slotRecoveryReview {
+                let kind = review.match == .original ? "原始备份" : "目标记录"
+                Text("机身标识尾号 \(review.cameraID.suffix(8)) 的 C-\(review.slot) 当前与\(kind)逐字节一致。请亲自检查原机身：一致不代表命令历史已知。确认后将再次读取；只有仍一致才解除手机上的风险标记，不会写入相机。")
+            } else {
+                Text("核对已失效；不会解除风险。")
+            }
+        }
         .fileExporter(isPresented: $exporting, document: exportDocument, contentType: .data, defaultFilename: exportName) { result in
             switch result {
             case .success: warning = "已导出原始备份；不会修改相机。"
