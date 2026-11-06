@@ -339,7 +339,7 @@ struct RecipeLabScreen: View {
                     updatePreview()
                     aiMessage = "已载入 AI 近似结果；色彩建议仅用于手机预览，不会写入 NCP 或相机。"
                 } catch is CancellationError { aiMessage = "请求已取消，服务商可能已收到数据。" }
-                catch { if !Task.isCancelled { aiMessage = "生成失败或输出未通过校验；草稿未改变。请检查配置、网络和视觉模型。" } }
+                catch { if !Task.isCancelled { aiMessage = AIGrading.failureMessage(error) } }
             }
         } catch { aiMessage = "请展开「服务配置」，填写有效 HTTPS Base URL 并保存该地址的 Key。" }
     }

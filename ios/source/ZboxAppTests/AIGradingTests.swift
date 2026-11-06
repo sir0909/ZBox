@@ -52,6 +52,21 @@ final class AIGradingTests: XCTestCase {
             XCTFail("expected missing content")
         } catch { XCTAssertEqual(error as? AIGrading.Failure, .missingContent) }
     }
+    func testUnexpectedHTMLAndSafeProviderErrors() async throws {
+        let html = Data("<html><title>verification</title></html>".utf8)
+        do {
+            _ = try await AIGrading.collect(stream(html), response: response(200, headers: ["Content-Type": "text/html; charset=utf-8"]))
+            XCTFail("expected HTML rejection")
+        } catch {
+            XCTAssertEqual(error as? AIGrading.Failure, .unexpectedHTML)
+            XCTAssertTrue(AIGrading.failureMessage(error).contains("安全验证"))
+            XCTAssertFalse(AIGrading.failureMessage(error).contains("verification"))
+        }
+        XCTAssertTrue(AIGrading.failureMessage(AIGrading.Failure.http(401)).contains("401"))
+        XCTAssertTrue(AIGrading.failureMessage(AIGrading.Failure.http(429)).contains("429"))
+        XCTAssertTrue(AIGrading.failureMessage(URLError(.timedOut)).contains("可能已收到图片"))
+    }
+
     func testRedirectDelegateRefusesForwarding() {
         let session = URLSession(configuration: .ephemeral)
         defer { session.invalidateAndCancel() }
