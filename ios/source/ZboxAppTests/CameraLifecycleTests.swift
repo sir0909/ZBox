@@ -21,7 +21,7 @@ private func ptpString(_ text: String) -> Data {
 }
 private func advertisedDeviceInfo() -> Data {
     var d = little(UInt16(100)) + little(UInt32(10)) + little(UInt16(100)) + Data([0]) + little(UInt16(0))
-    let ops: [UInt16] = [0x1001, 0x1002, 0x1015, 0x90c1, 0x90c8, 0x90cc, 0x920a, 0x920b]
+    let ops: [UInt16] = [0x1001, 0x1002, 0x1015, 0x90c1, 0x90c8, 0x90cc, 0x90cd, 0x920a, 0x920b]
     d += little(UInt32(ops.count))
     for op in ops { d += little(op) }
     for _ in 0..<4 { d += little(UInt32(0)) }
@@ -60,6 +60,9 @@ private actor FakeAppCommand: PtpIpByteChannel {
     private var ops: [UInt16] = []
     private(set) var closed = false
     private var slotPayload = RecipePayload.linearTemplate()
+    private var loseSlotAck = false
+    enum Fault: Error { case lostSlotAck }
+    func loseSlotAcknowledgement() { loseSlotAck = true }
     func setSlotPayload(_ data: Data) { slotPayload = data }
     init(pausedOp: UInt16, pause: PausePoint, pauseOccurrence: Int) {
         self.pausedOp = pausedOp; self.pause = pause; self.pauseOccurrence = pauseOccurrence
@@ -76,6 +79,8 @@ private actor FakeAppCommand: PtpIpByteChannel {
                 inbox.append(contentsOf: input(tx, advertisedDeviceInfo()))
             } else if op == 0x90cc {
                 inbox.append(contentsOf: input(tx, slotPayload))
+            } else if op == 0x90cd {
+                // Wait for the data-out frames before acknowledging.
             } else if op == 0x9203 {
                 inbox.append(contentsOf: input(tx, Data([0xff, 0xd8, 0xff, 0xd9])))
             } else if op == 0x1004 {
@@ -104,6 +109,13 @@ private actor FakeAppCommand: PtpIpByteChannel {
                 inbox.append(response(tx))
             }
             if op == pausedOp && ops.filter({ $0 == op }).count == pauseOccurrence { await pause.wait() }
+        } else if type == PtpIpPacketType.startData.rawValue {
+            return
+        } else if type == PtpIpPacketType.endData.rawValue {
+            let tx = u32(data, 8)
+            slotPayload = Data(data.dropFirst(12))
+            if loseSlotAck { throw Fault.lostSlotAck }
+            inbox.append(response(tx))
         }
     }
     func receive() async throws -> Data { inbox.isEmpty ? Data() : inbox.removeFirst() }
@@ -427,6 +439,75 @@ final class CameraLifecycleTests: XCTestCase {
         await pause.release(); await finalRead.value
         let pending = try await store.hasPendingRisk(); XCTAssertTrue(pending)
         let ops = await command.operations(); XCTAssertFalse(ops.contains(0x90cd)); await model.disconnect()
+    }
+    func testGuardedSlotWriteFullAppFlowWithFakeCameraOnly() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = SlotBackupStore(directory: folder)
+        let (model, command, pause) = try await makeModel(pausedOp: 0x90cc, pauseOccurrence: 1,
+            cameraID: String(repeating: "ab", count: 16), backupStore: store)
+        let target = try RecipePayload.edit(template: RecipePayload.linearTemplate(), name: "NEXT")
+        let prep = Task { await model.prepareSlotWriteForTesting(slot: 2, candidate: target) }
+        await pause.untilEntered()
+        await model.refreshBattery() // busy gate must block another operation
+        await pause.release(); await prep.value
+        XCTAssertNotNil(model.slotWriteTestReview)
+        let listing = try await store.listBackups(); XCTAssertEqual(listing.records.count, 1)
+        let before = await command.operations(); XCTAssertFalse(before.contains(0x90cd)); XCTAssertFalse(before.contains(0x1015))
+        let result = await model.confirmSlotWriteForTesting()
+        XCTAssertEqual(result, .verified)
+        let pending = try await store.hasPendingRisk(); XCTAssertFalse(pending)
+        let ops = await command.operations(); XCTAssertEqual(ops.filter { $0 == 0x90cd }.count, 1)
+        XCTAssertFalse(ops.contains(0x90ce)); await model.disconnect()
+    }
+    func testBackgroundBetweenBackupAndConfirmationBlocksFakeWrite() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = SlotBackupStore(directory: folder)
+        let (model, command, pause) = try await makeModel(pausedOp: 0x90cc, pauseOccurrence: 1,
+            cameraID: String(repeating: "ab", count: 16), backupStore: store)
+        let prep = Task { await model.prepareSlotWriteForTesting(slot: 2, candidate: RecipePayload.linearTemplate()) }
+        await pause.untilEntered(); await pause.release(); await prep.value
+        XCTAssertNotNil(model.slotWriteTestReview)
+        model.appBecameInactive(); model.appBecameActive()
+        let result = await model.confirmSlotWriteForTesting(); XCTAssertNil(result)
+        let ops = await command.operations(); XCTAssertFalse(ops.contains(0x90cd))
+        let pending = try await store.hasPendingRisk(); XCTAssertFalse(pending)
+        await model.disconnect()
+    }
+    func testFakeWriteAckLostPersistsRiskAndDoesNotRetry() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = SlotBackupStore(directory: folder)
+        let (model, command, pause) = try await makeModel(pausedOp: 0x90cc, pauseOccurrence: 1,
+            cameraID: String(repeating: "ab", count: 16), backupStore: store)
+        let target = try RecipePayload.edit(template: RecipePayload.linearTemplate(), name: "NEXT")
+        let prep = Task { await model.prepareSlotWriteForTesting(slot: 2, candidate: target) }
+        await pause.untilEntered(); await pause.release(); await prep.value
+        await command.loseSlotAcknowledgement()
+        let outcome = await model.confirmSlotWriteForTesting(); XCTAssertEqual(outcome, .uncertain)
+        let risk = try await SlotBackupStore(directory: folder).hasPendingRisk(); XCTAssertTrue(risk)
+        let ops = await command.operations(); XCTAssertEqual(ops.filter { $0 == 0x90cd }.count, 1)
+        await model.prepareSlotWriteForTesting(slot: 2, candidate: target)
+        XCTAssertNil(model.slotWriteTestReview)
+        let after = await command.operations(); XCTAssertEqual(after.filter { $0 == 0x90cd }.count, 1)
+        await model.disconnect()
+    }
+    func testBackgroundDuringFakeWriteKeepsPendingRisk() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = SlotBackupStore(directory: folder)
+        let (model, command, pause) = try await makeModel(pausedOp: 0x90cd, pauseOccurrence: 1,
+            cameraID: String(repeating: "ab", count: 16), backupStore: store)
+        let target = try RecipePayload.edit(template: RecipePayload.linearTemplate(), name: "NEXT")
+        await model.prepareSlotWriteForTesting(slot: 2, candidate: target)
+        XCTAssertNotNil(model.slotWriteTestReview)
+        let write = Task { await model.confirmSlotWriteForTesting() }
+        await pause.untilEntered(); model.appBecameInactive(); model.appBecameActive()
+        await pause.release(); _ = await write.value
+        let risk = try await store.hasPendingRisk(); XCTAssertTrue(risk)
+        let ops = await command.operations(); XCTAssertEqual(ops.filter { $0 == 0x90cd }.count, 1)
+        await model.disconnect()
     }
     func testInactiveDuringHandshakeCannotPublishOldConnection() async throws {
         let pause = PausePoint(), command = FakeAppCommand(pausedOp: 0x1002, pause: pause, pauseOccurrence: 1)

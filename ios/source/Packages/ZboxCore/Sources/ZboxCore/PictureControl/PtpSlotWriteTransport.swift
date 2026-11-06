@@ -27,3 +27,13 @@ struct PtpSlotWriteTransport: SlotWriteTransport {
             original: expectedOriginal, target: payload, shouldContinue: shouldContinue)
     }
 }
+
+#if DEBUG
+public extension PtpIpSession {
+    /// Test-only factory: never present in Release builds or wired to UI.
+    func debugSlotWriteCoordinator(journal: any SlotWriteJournal,
+                                   shouldContinue: @escaping @Sendable () async -> Bool) -> SlotWriteCoordinator {
+        SlotWriteCoordinator(transport: PtpSlotWriteTransport(session: self, shouldContinue: shouldContinue), journal: journal)
+    }
+}
+#endif

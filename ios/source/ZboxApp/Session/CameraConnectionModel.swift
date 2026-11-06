@@ -37,6 +37,11 @@ final class CameraConnectionModel: ObservableObject {
     @Published private(set) var slotRecoveryMessage = "如有未决风险，可连接原机身后进行只读核对。"
     private var slotRecovery: SlotWriteRecovery?
     private var slotRecoveryAttempt = UUID()
+    #if DEBUG
+    private var slotWriteTest: SlotWriteCoordinator?
+    private var slotWriteTestAttempt = UUID()
+    private(set) var slotWriteTestReview: SlotWriteConfirmation?
+    #endif
     let slotBackupStore: SlotBackupStore
     init(slotBackupStore: SlotBackupStore = SlotBackupStore()) { self.slotBackupStore = slotBackupStore }
     var canBackupSlot: Bool { !cameraGUID.isEmpty && operationPolicy.permits(.slots) }
@@ -164,6 +169,9 @@ final class CameraConnectionModel: ObservableObject {
         discoveryID = UUID()
         connectionID = UUID()
         discardSlotRecovery()
+        #if DEBUG
+        invalidateSlotWriteTest()
+        #endif
         if phase == .scanning { phase = .idle; statusMessage = "扫描已取消（应用不活跃）" }
         if phase == .connecting { statusMessage = "连接已取消，等待握手安全结束…" }
         cancelAlbumWork()
@@ -311,6 +319,9 @@ final class CameraConnectionModel: ObservableObject {
         guard phase != .disconnecting else { return }
         connectionID = UUID(); discoveryID = UUID()
         discardSlotRecovery()
+        #if DEBUG
+        invalidateSlotWriteTest()
+        #endif
         let wasCapturing = captureBusy
         let wasWritingExposure = exposureWriteInProgress
         exposureWriteCancelled = true
@@ -801,6 +812,55 @@ final class CameraConnectionModel: ObservableObject {
             if await active.connectionInfo == nil { await disconnect(reason: "核对槽位时连接中断，请重新连接") }
         }
     }
+
+    #if DEBUG
+    // Only for App-hosted fake-camera tests; not compiled into Release and not in UI.
+    func invalidateSlotWriteTest() {
+        slotWriteTestAttempt = UUID(); slotWriteTestReview = nil
+        let old = slotWriteTest; slotWriteTest = nil
+        if let old { Task { await old.cancel() } }
+    }
+    private func mayTestSlotWrite(_ active: PtpIpSession, epoch: UUID, cameraID: String, attempt: UUID) -> Bool {
+        session === active && phase == .connected && appActive && connectionID == epoch && cameraGUID == cameraID &&
+        slotWriteTestAttempt == attempt && slotsBusy && liveViewPhase == .idle && !pairingPrepared && !movieMayBeActive
+    }
+    func prepareSlotWriteForTesting(slot: Int, candidate: Data) async {
+        guard let active = session, canBackupSlot else { return }
+        invalidateSlotWriteTest()
+        let epoch = connectionID, cameraID = cameraGUID, attempt = slotWriteTestAttempt
+        slotsBusy = true
+        defer { if session === active { slotsBusy = false } }
+        let coordinator = await active.debugSlotWriteCoordinator(journal: slotBackupStore, shouldContinue: { [weak self, weak active] in
+            guard let self, let active else { return false }
+            return await self.mayTestSlotWrite(active, epoch: epoch, cameraID: cameraID, attempt: attempt)
+        })
+        slotWriteTest = coordinator
+        do {
+            let review = try await coordinator.prepare(cameraID: cameraID, slot: slot, candidate: candidate)
+            guard mayTestSlotWrite(active, epoch: epoch, cameraID: cameraID, attempt: attempt) else {
+                await coordinator.cancel(); return
+            }
+            slotWriteTestReview = review
+        } catch {
+            if slotWriteTestAttempt == attempt { slotWriteTest = nil; slotWriteTestReview = nil }
+        }
+    }
+    func confirmSlotWriteForTesting() async -> SlotWriteCoordinator.Outcome? {
+        guard let active = session, let review = slotWriteTestReview, let coordinator = slotWriteTest, canBackupSlot else { return nil }
+        let epoch = connectionID, cameraID = cameraGUID, attempt = slotWriteTestAttempt
+        guard review.cameraID == cameraID else { invalidateSlotWriteTest(); return nil }
+        slotsBusy = true; slotWriteTestReview = nil
+        defer {
+            if session === active { slotsBusy = false }
+            if slotWriteTestAttempt == attempt { slotWriteTest = nil }
+        }
+        do {
+            let result = try await coordinator.confirm(review.id)
+            guard mayTestSlotWrite(active, epoch: epoch, cameraID: cameraID, attempt: attempt) else { return nil }
+            return result
+        } catch { return nil }
+    }
+    #endif
 
     // MARK: - Explicit single autofocus during live view
 
