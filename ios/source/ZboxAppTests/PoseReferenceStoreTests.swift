@@ -55,6 +55,15 @@ final class PoseReferenceStoreTests: XCTestCase {
         XCTAssertNil(reopened.imageData(entry.id))
         XCTAssertTrue(reopened.healthy)
     }
+    func testIndexWriteFailureRollsBackOnlyTheNewImage() throws {
+        let url = folder(); defer { try? FileManager.default.removeItem(at: url) }
+        let store = PoseReferenceStore(directory: url)
+        try FileManager.default.createDirectory(at: url.appendingPathComponent("index.json"), withIntermediateDirectories: true)
+        XCTAssertThrowsError(try store.add(jpeg()))
+        XCTAssertTrue(store.items.isEmpty)
+        let names = try FileManager.default.contentsOfDirectory(atPath: url.path)
+        XCTAssertEqual(names, ["index.json"])
+    }
     func testFullIndexBlocksAddingAndDuplicateIDsFailClosed() throws {
         let url = folder(); defer { try? FileManager.default.removeItem(at: url) }
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

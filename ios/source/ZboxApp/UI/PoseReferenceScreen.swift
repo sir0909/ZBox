@@ -6,6 +6,7 @@ import UIKit
 struct PoseReferenceScreen: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var store = PoseReferenceStore()
+    @StateObject private var phraseStore = PosePhraseStore()
     @State private var photo: PhotosPickerItem?
     @State private var selectedID: UUID?
     @State private var favoritesOnly = false
@@ -15,12 +16,18 @@ struct PoseReferenceScreen: View {
     @State private var importGeneration = UUID()
     @State private var groupID = 0
     @State private var phraseIndex = 0
+    @State private var newPhrase = ""
+    @State private var phraseToDelete: String?
 
     private var visible: [PoseReference] { store.items.filter { !favoritesOnly || $0.favorite } }
     private var selected: PoseReference? { visible.first { $0.id == selectedID } ?? visible.first }
     private var position: Int { selected.flatMap { current in visible.firstIndex { $0.id == current.id } } ?? 0 }
-    private var group: PoseWords.Group { PoseWords.groups[groupID] }
-    private var phrase: String { group.lines[min(phraseIndex, group.lines.count - 1)] }
+    private var phrases: [String] {
+        if groupID == -1 { return phraseStore.favorites }
+        if groupID == -2 { return phraseStore.custom }
+        return PoseWords.groups.first(where: { $0.id == groupID })?.lines ?? []
+    }
+    private var phrase: String? { phrases.isEmpty ? nil : phrases[min(phraseIndex, phrases.count - 1)] }
 
     var body: some View {
         NavigationStack {
@@ -49,6 +56,16 @@ struct PoseReferenceScreen: View {
                     }
                     Button("取消", role: .cancel) { pendingDeletion = nil }
                 } message: { Text("只删除本应用中的缩略图副本，不影响系统相册原图。") }
+            .confirmationDialog("删除这句自定义话术？", isPresented: Binding(
+                get: { phraseToDelete != nil }, set: { if !$0 { phraseToDelete = nil } }), titleVisibility: .visible) {
+                    Button("删除自定义话术", role: .destructive) {
+                        if let line = phraseToDelete {
+                            do { try phraseStore.removeCustom(line) } catch { phraseStore.reportFailure() }
+                        }
+                        phraseToDelete = nil; phraseIndex = 0
+                    }
+                    Button("取消", role: .cancel) { phraseToDelete = nil }
+                } message: { Text("同时移除这句自定义话术的本地收藏。") }
         }
     }
 
@@ -104,16 +121,38 @@ struct PoseReferenceScreen: View {
         Section("摄影引导话术 · 离线") {
             Picker("分类", selection: $groupID) {
                 ForEach(PoseWords.groups) { group in Text(group.title).tag(group.id) }
+                Text("话术收藏").tag(-1)
+                Text("我的话术").tag(-2)
             }.onChange(of: groupID) { _, _ in phraseIndex = 0 }
-            Text(phrase).font(.headline).frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 8).accessibilityLabel("摄影话术：\(phrase)")
-            HStack {
-                Button("换一句") { phraseIndex = (phraseIndex + 1) % group.lines.count }
-                Button("复制话术") { UIPasteboard.general.string = phrase }
-            }.buttonStyle(.bordered)
+            if let line = phrase {
+                Text(line).font(.headline).frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 8).accessibilityLabel("摄影话术：\(line)")
+                ViewThatFits(in: .horizontal) {
+                    HStack { phraseButtons(line) }
+                    VStack(alignment: .leading) { phraseButtons(line) }
+                }.buttonStyle(.bordered)
+                if groupID == -2 {
+                    Button("删除这句自定义话术", role: .destructive) { phraseToDelete = line }
+                        .disabled(!phraseStore.healthy)
+                }
+            } else { Text("此分类还没有话术。").foregroundStyle(.secondary) }
+            TextField("写一句自己的引导话术", text: $newPhrase)
+                .onChange(of: newPhrase) { _, value in if value.count > 180 { newPhrase = String(value.prefix(180)) } }
+            Button("保存为我的话术") {
+                do { try phraseStore.addCustom(newPhrase); newPhrase = ""; groupID = -2; phraseIndex = 0 }
+                catch { phraseStore.reportFailure() }
+            }.disabled(!phraseStore.healthy || newPhrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Text(phraseStore.message).font(.footnote).foregroundStyle(.secondary)
             Text("先征求被摄者意愿；一次只给一个小任务，不强迫动作、微笑或接触。话术是离线建议，不是 AI 实时生成。")
                 .font(.footnote).foregroundStyle(.secondary)
         }
+    }
+    @ViewBuilder private func phraseButtons(_ line: String) -> some View {
+        Button("换一句") { phraseIndex = (phraseIndex + 1) % phrases.count }.disabled(phrases.count < 2)
+        Button(phraseStore.favorites.contains(line) ? "取消收藏" : "收藏话术") {
+            do { try phraseStore.toggleFavorite(line) } catch { phraseStore.reportFailure() }
+        }.disabled(!phraseStore.healthy)
+        Button("复制话术") { UIPasteboard.general.string = line }
     }
 
     private func startImport(_ item: PhotosPickerItem?) {
