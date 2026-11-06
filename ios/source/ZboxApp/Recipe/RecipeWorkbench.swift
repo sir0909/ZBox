@@ -200,7 +200,10 @@ final class RecipeWorkbench: ObservableObject {
     }
     func importBytes(_ data: Data) {
         do {
-            if data.first(where: { ![0x09, 0x0a, 0x0d, 0x20].contains($0) }) == 0x7b {
+            // An 84-byte legacy name may legitimately begin with '{'; prioritize known binary lengths.
+            // A ZBox archive necessarily contains a base64-encoded 614-byte payload and is longer.
+            if ![84, 614, 618].contains(data.count),
+               data.first(where: { ![0x09, 0x0a, 0x0d, 0x20].contains($0) }) == 0x7b {
                 let archive = try RecipeArchive.decode(data)
                 try adopt(archive.payload, metadata: archive.metadata, family: archive.family, legacyOriginal: archive.legacyOriginal,
                           notice: "已导入 ZBox 本地配方；载荷和预览参数已恢复，不会写入相机。")

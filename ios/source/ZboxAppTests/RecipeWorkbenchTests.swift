@@ -159,6 +159,22 @@ final class RecipeWorkbenchTests: XCTestCase {
         XCTAssertEqual(try loaded.snapshot(), original)
     }
 
+    func testLegacyNameBeginningWithBraceIsNotMistakenForArchive() throws {
+        let workbench = RecipeWorkbench(storeURL: temporaryStore())
+        var original = Data(repeating: 0, count: 84)
+        original.replaceSubrange(0..<7, with: Data("{LEGACY".utf8))
+        for i in 0..<18 { original[0x1a + i] = UInt8(i * 15) }
+        workbench.importBytes(original)
+        XCTAssertEqual(workbench.name, "{LEGACY")
+        XCTAssertEqual(workbench.legacyOriginal, original)
+        XCTAssertEqual(try PictureControl614.parse(workbench.snapshot()).name, "{LEGACY")
+        let archived = try workbench.exportArchive()
+        let reopened = RecipeWorkbench(storeURL: temporaryStore())
+        reopened.importBytes(archived)
+        XCTAssertEqual(reopened.legacyOriginal, original)
+        XCTAssertEqual(reopened.name, "{LEGACY")
+    }
+
     func testLegacyMonochromeTypeIsLocalMetadataNotPayload() throws {
         let url = temporaryStore(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let workbench = RecipeWorkbench(storeURL: url)
