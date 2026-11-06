@@ -117,7 +117,7 @@ struct RecipeLabScreen: View {
                     Button("导入") { workbench.importShareCode(); updatePreview() }
                     if !workbench.shareText.isEmpty { ShareLink("分享", item: workbench.shareText) }
                 }.buttonStyle(.bordered)
-                Text("快传码只携带少量曲线点与参数，不保证 614B 或 15 位曲线无损；参数暂不应用。")
+                Text("快传码只携带曲线点与部分参数，不保证 614B 或 15 位曲线无损；部分参数仅用于手机近似预览，不写入 NCP 或相机。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Section("尚未接入") {
@@ -145,6 +145,8 @@ struct RecipeLabScreen: View {
             }
         }
         .onChange(of: workbench.points) { _, _ in updatePreview() }
+        .onChange(of: workbench.metadata) { _, _ in updatePreview() }
+        .onChange(of: workbench.presetFamily) { _, _ in updatePreview() }
         .onAppear { if referenceJPEG != nil { updatePreview() } }
         .onDisappear {
             previewTask?.cancel(); previewGeneration = UUID(); previewPending = false
@@ -212,7 +214,7 @@ struct RecipeLabScreen: View {
                     HStack { referenceButtons }
                     VStack(alignment: .leading) { referenceButtons }
                 }.buttonStyle(.bordered).controlSize(.large)
-                Text("本地生成最长边 768 像素的近似预览，不上传或修改原图；系统可能从 iCloud 下载。不代表尼康机身或 RAW 的实际成像。")
+                Text("手机近似模拟曲线、黑白、亮度、对比、饱和度和色相；基础风格、锐化与清晰度未模拟。参数不会写入 NCP 或相机，效果不代表尼康或 RAW 实际成像。原图不上传或修改，系统可能从 iCloud 下载。")
                     .font(.footnote).foregroundStyle(.secondary)
             }.padding(.vertical, 4)
         }
@@ -222,7 +224,7 @@ struct RecipeLabScreen: View {
         if referenceJPEG == nil { return "选择后可比较原图与曲线效果" }
         if showOriginal { return "正在显示原图" }
         if previewPending { return "正在生成效果，暂时显示原图" }
-        if previewFailed { return "效果生成失败，正在显示原图" }
+        if previewFailed { return "参数无效或效果生成失败，正在显示原图" }
         return processedPNG == nil ? "正在显示原图" : "正在显示曲线近似效果"
     }
 
@@ -295,11 +297,13 @@ struct RecipeLabScreen: View {
         let generation = previewGeneration
         processedPNG = nil
         guard let jpeg = referenceJPEG else { previewPending = false; previewFailed = false; return }
-        guard let lut = try? workbench.previewLUT() else { previewPending = false; previewFailed = true; return }
+        guard let lut = try? workbench.previewLUT(), let adjustments = workbench.previewAdjustments() else {
+            previewPending = false; previewFailed = true; return
+        }
         previewPending = true; previewFailed = false
         previewTask = Task {
             do { try await Task.sleep(nanoseconds: 250_000_000) } catch { return }
-            let output = await Task.detached(priority: .utility) { ReferencePreview.apply(jpeg: jpeg, lut: lut) }.value
+            let output = await Task.detached(priority: .utility) { ReferencePreview.apply(jpeg: jpeg, lut: lut, adjustments: adjustments) }.value
             guard !Task.isCancelled, generation == previewGeneration else { return }
             processedPNG = output
             previewPending = false; previewFailed = output == nil
@@ -330,7 +334,7 @@ struct LocalPresetLibraryScreen: View {
                 if workbench.entries.isEmpty { Text("尚无已保存的本地预设").foregroundStyle(.secondary) }
             }
             Section("内置预设 · 200 套") {
-                Text("移植自安卓现有预设数据。目前只载入曲线；基础参数和类别信息尚未应用，效果不等同安卓或机身。")
+                Text("移植自安卓预设。曲线可用于本地载荷；黑白和部分色彩参数仅用于手机近似预览，基础风格、锐化与清晰度未模拟；不代表机身效果。")
                     .font(.footnote).foregroundStyle(.secondary)
                 if catalogError { Text("内置数据读取失败").foregroundStyle(.red) }
                 Picker("分类", selection: $category) {

@@ -6,6 +6,7 @@ struct LocalRecipe: Codable, Identifiable {
     let name: String
     let payload: Data
     let shareMetadata: ShareRecipe?
+    let family: Int?
     let savedAt: Date
 }
 
@@ -23,7 +24,8 @@ final class RecipeWorkbench: ObservableObject {
     @Published var shareText = ""
     @Published private(set) var storeHealthy = true
     private var template = RecipePayload.linearTemplate()
-    private var metadata: ShareRecipe?
+    @Published private(set) var metadata: ShareRecipe?
+    @Published private(set) var presetFamily: Int?
     private let storeURL: URL
 
     init(storeURL: URL? = nil) {
@@ -66,6 +68,12 @@ final class RecipeWorkbench: ObservableObject {
         curveEdited = true
         message = "已载入本地示例曲线；尚未写入相机。"
     }
+    func previewAdjustments() -> PreviewColorAdjustments? {
+        guard let metadata else { return .neutral }
+        let mono = presetFamily == 1 || (presetFamily == nil && metadata.profile.uppercased() == "MONOCHROME")
+        return PreviewColorAdjustments(saturation: metadata.saturation, hue: metadata.hue,
+                                       contrast: metadata.contrast, brightness: metadata.brightness, monochrome: mono)
+    }
     func previewLUT() throws -> [UInt8] {
         curveEdited ? try CurveLUT.make(points) : try RecipePayload.lut8(template)
     }
@@ -73,11 +81,11 @@ final class RecipeWorkbench: ObservableObject {
         let lut = curveEdited ? try CurveLUT.make(points) : nil
         return try RecipePayload.edit(template: template, name: name.trimmingCharacters(in: .whitespaces), lut: lut)
     }
-    func adopt(_ payload: Data, metadata: ShareRecipe? = nil, notice: String) throws {
+    func adopt(_ payload: Data, metadata: ShareRecipe? = nil, family: Int? = nil, notice: String) throws {
         let parsed = try PictureControl614.parse(payload)
         template = payload; name = parsed.name
         points = try CurveLUT.sample(RecipePayload.lut8(payload))
-        curveEdited = false; self.metadata = metadata; message = notice
+        curveEdited = false; self.metadata = metadata; presetFamily = family; message = notice
     }
     func useAI(_ result: AIRecipe) throws {
         let payload = try RecipePayload.edit(template: RecipePayload.linearTemplate(), name: result.name,
@@ -87,8 +95,8 @@ final class RecipeWorkbench: ObservableObject {
     }
     func useBuiltIn(_ entry: BuiltInPreset) {
         do {
-            try adopt(entry.makePayload(), metadata: entry.shareMetadata,
-                      notice: "已载入内置曲线；基础参数和类型仅作元数据，尚未应用到预览或相机。")
+            try adopt(entry.makePayload(), metadata: entry.shareMetadata, family: entry.family,
+                      notice: "已载入内置曲线；部分色彩参数仅在手机近似预览，不写入相机或 NCP。")
             points = entry.points
         } catch { message = "内置预设无效；未替换当前草稿。" }
     }
@@ -102,9 +110,9 @@ final class RecipeWorkbench: ObservableObject {
         do {
             let data = try snapshot()
             let entry = LocalRecipe(id: UUID(), name: try PictureControl614.parse(data).name,
-                                    payload: data, shareMetadata: metadata, savedAt: Date())
+                                    payload: data, shareMetadata: metadata, family: presetFamily, savedAt: Date())
             try persist([entry] + entries)
-            try adopt(data, metadata: metadata, notice: "已保存到手机本地预设库；不会写入相机。")
+            try adopt(data, metadata: metadata, family: presetFamily, notice: "已保存到手机本地预设库；不会写入相机。")
         } catch { message = "保存失败：请使用 1–19 个 ASCII 字符的名称，并检查本地预设库状态。" }
     }
     func remove(_ entry: LocalRecipe) {
@@ -112,7 +120,7 @@ final class RecipeWorkbench: ObservableObject {
         catch { message = "删除失败；未修改本地预设库。" }
     }
     func use(_ entry: LocalRecipe) {
-        do { try adopt(entry.payload, metadata: entry.shareMetadata, notice: "已载入本地预设；不会修改相机。") }
+        do { try adopt(entry.payload, metadata: entry.shareMetadata, family: entry.family, notice: "已载入本地预设；不会修改相机。") }
         catch { message = "预设无效，未替换草稿。" }
     }
     func makeShareCode() {
@@ -129,7 +137,7 @@ final class RecipeWorkbench: ObservableObject {
             let imported = try RecipeShareCode.decode(shareText)
             let lut = try CurveLUT.make(imported.points)
             let data = try RecipePayload.edit(template: RecipePayload.linearTemplate(), name: imported.name, lut: lut)
-            try adopt(data, metadata: imported, notice: "快传码已近似重建曲线；非曲线参数保留在码内，尚未应用到画面或相机。")
+            try adopt(data, metadata: imported, notice: "快传码已近似重建曲线；部分参数仅用于手机近似预览，未写入相机或 NCP。")
             points = imported.points; curveEdited = false
         } catch { message = "快传码无效或机身名称不是 ASCII；未替换当前草稿。" }
     }

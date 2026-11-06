@@ -3,6 +3,7 @@ import CoreGraphics
 import CoreTransferable
 import ImageIO
 import UniformTypeIdentifiers
+import ZboxCore
 
 /// PhotosPicker hands us a temporary file; decode a bounded, metadata-stripped thumbnail.
 /// Reference pixels stay local and are not persisted or uploaded by this component.
@@ -37,7 +38,7 @@ enum ReferencePreview {
         return data as Data
     }
     /// Per-channel sRGB-like display approximation, not a Nikon engine or RAW output.
-    static func apply(jpeg: Data, lut: [UInt8]) -> Data? {
+    static func apply(jpeg: Data, lut: [UInt8], adjustments: PreviewColorAdjustments = .neutral) -> Data? {
         guard jpeg.count <= 2_000_000, lut.count == 256,
               let source = CGImageSourceCreateWithData(jpeg as CFData, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
@@ -52,9 +53,11 @@ enum ReferencePreview {
             guard let bytes = buffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return nil }
             for i in 0..<(w * h) {
                 let offset = i * 4
-                bytes[offset] = lut[Int(bytes[offset])]
-                bytes[offset + 1] = lut[Int(bytes[offset + 1])]
-                bytes[offset + 2] = lut[Int(bytes[offset + 2])]
+                let r = lut[Int(bytes[offset])], g = lut[Int(bytes[offset + 1])], b = lut[Int(bytes[offset + 2])]
+                let transformed = adjustments.apply(red: r, green: g, blue: b)
+                bytes[offset] = transformed.0
+                bytes[offset + 1] = transformed.1
+                bytes[offset + 2] = transformed.2
             }
             guard let output = ctx.makeImage() else { return nil }
             return encode(output, type: UTType.png.identifier as CFString)

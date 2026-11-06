@@ -53,4 +53,33 @@ final class RecipeWorkbenchTests: XCTestCase {
         XCTAssertEqual(try workbench.previewLUT(), try CurveLUT.make(workbench.points))
     }
 
+    func testBuiltInMonochromeFamilyAndMetadataSurviveLocalSave() throws {
+        let url = temporaryStore(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let workbench = RecipeWorkbench(storeURL: url)
+        let preset = try XCTUnwrap(BuiltInPresetCatalog.load().first { $0.family == 1 })
+        workbench.useBuiltIn(preset)
+        XCTAssertEqual(workbench.presetFamily, 1)
+        XCTAssertTrue(try XCTUnwrap(workbench.previewAdjustments()).monochrome)
+        workbench.save()
+        let reopened = RecipeWorkbench(storeURL: url)
+        let entry = try XCTUnwrap(reopened.entries.first)
+        reopened.use(entry)
+        XCTAssertEqual(reopened.presetFamily, 1)
+        XCTAssertEqual(reopened.metadata, preset.shareMetadata)
+        XCTAssertTrue(try XCTUnwrap(reopened.previewAdjustments()).monochrome)
+        XCTAssertEqual(try reopened.snapshot(), entry.payload)
+    }
+    func testLegacyLocalEntryWithoutFamilyStillLoads() throws {
+        let url = temporaryStore(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let oldJSON: [[String: Any]] = [["id": UUID().uuidString, "name": "OLD", "payload": RecipePayload.linearTemplate().base64EncodedString(), "savedAt": 0]]
+        try JSONSerialization.data(withJSONObject: oldJSON).write(to: url)
+        let workbench = RecipeWorkbench(storeURL: url)
+        XCTAssertTrue(workbench.storeHealthy)
+        let entry = try XCTUnwrap(workbench.entries.first)
+        XCTAssertNil(entry.family)
+        workbench.use(entry)
+        XCTAssertTrue(try XCTUnwrap(workbench.previewAdjustments()).isNeutral)
+    }
+
 }
