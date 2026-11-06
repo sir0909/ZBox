@@ -21,6 +21,60 @@ final class RecipeWorkbenchTests: XCTestCase {
         reopened.remove(reopened.entries[0]); XCTAssertTrue(reopened.entries.isEmpty)
         XCTAssertTrue(RecipeWorkbench(storeURL: url).entries.isEmpty)
     }
+    func testLocalSavePreservesEditablePointsAndPayloadAcrossReopen() throws {
+        let url = temporaryStore(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let workbench = RecipeWorkbench(storeURL: url)
+        let shared = ShareRecipe(name: "EXACT", points: [.init(x: 0, y: 5), .init(x: 101, y: 150), .init(x: 255, y: 240)])
+        workbench.shareText = try RecipeShareCode.encode(shared)
+        workbench.importShareCode()
+        let originalPoints = workbench.points
+        let originalPayload = try workbench.snapshot()
+        workbench.save()
+        XCTAssertEqual(workbench.points, originalPoints, "saving must not resample the live draft")
+        XCTAssertEqual(try workbench.snapshot(), originalPayload)
+        let reopened = RecipeWorkbench(storeURL: url)
+        reopened.use(try XCTUnwrap(reopened.entries.first))
+        XCTAssertEqual(reopened.points, originalPoints)
+        XCTAssertEqual(try reopened.snapshot(), originalPayload)
+        reopened.setPoint(1, y: 160)
+        XCTAssertEqual(try PictureControl614.parse(reopened.snapshot()).curve, try CurveLUT.make15(reopened.points))
+    }
+
+    func testMoveAndRevertRestoresOriginalIrregularFifteenBitLUT() throws {
+        let workbench = RecipeWorkbench(storeURL: temporaryStore())
+        var original = RecipePayload.linearTemplate()
+        original[0x67] = 7
+        original[0x66 + 33 * 2] = 0x2a
+        original[0x67 + 33 * 2] = 0xbc // irregular value between visible sampled points
+        workbench.importBytes(original)
+        let savedPoints = workbench.points
+        let y = Double(savedPoints[2].y)
+        workbench.setPoint(2, y: y + 12)
+        XCTAssertNotEqual(try workbench.snapshot(), original)
+        workbench.setPoint(2, y: y)
+        XCTAssertEqual(workbench.points, savedPoints)
+        XCTAssertEqual(try workbench.snapshot(), original)
+        XCTAssertEqual(try workbench.previewLUT(), try RecipePayload.lut8(original))
+        // This also holds after the editing points and 614B have been archived.
+        let archived = try workbench.exportArchive()
+        let reopened = RecipeWorkbench(storeURL: temporaryStore())
+        reopened.importBytes(archived)
+        reopened.setPoint(2, y: y + 12); reopened.setPoint(2, y: y)
+        XCTAssertEqual(try reopened.snapshot(), original)
+    }
+
+    func testInvalidStoredEditingPointsNeverOverwriteLibrary() throws {
+        let url = temporaryStore(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let json: [[String: Any]] = [["id": UUID().uuidString, "name": "OLD", "payload": RecipePayload.linearTemplate().base64EncodedString(),
+                                     "editPoints": [["x": 0, "y": 0], ["x": 0, "y": 10]], "savedAt": 0]]
+        let bytes = try JSONSerialization.data(withJSONObject: json); try bytes.write(to: url)
+        let workbench = RecipeWorkbench(storeURL: url)
+        XCTAssertFalse(workbench.storeHealthy)
+        workbench.save()
+        XCTAssertEqual(try Data(contentsOf: url), bytes)
+    }
+
     func testCorruptStoreIsNotOverwritten() throws {
         let url = temporaryStore(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)

@@ -6,6 +6,8 @@ struct LocalRecipe: Codable, Identifiable {
     let name: String
     let payload: Data
     let shareMetadata: ShareRecipe?
+    /// Exact editable control points; absent in stores saved by older versions.
+    let editPoints: [CurveLUT.Point]?
     let family: Int?
     let legacyOriginal: Data?
     let savedAt: Date
@@ -39,6 +41,10 @@ final class RecipeWorkbench: ObservableObject {
     @Published var shareText = ""
     @Published private(set) var storeHealthy = true
     private var template = RecipePayload.linearTemplate()
+    private var baselinePoints: [CurveLUT.Point] = (0...4).map { i in
+        let x: Float = [0, 64, 128, 191, 255][i]
+        return .init(x: x, y: x)
+    }
     @Published private(set) var metadata: ShareRecipe?
     @Published private(set) var presetFamily: Int?
     @Published private(set) var legacyOriginal: Data?
@@ -58,6 +64,7 @@ final class RecipeWorkbench: ObservableObject {
             guard decoded.count <= 200 else { throw StoreError.invalid }
             for entry in decoded {
                 _ = try PictureControl614.parse(entry.payload)
+                if let points = entry.editPoints { _ = try CurveLUT.make(points) }
                 if let original = entry.legacyOriginal {
                     guard original.count == 84, (try RecipePayload.importFile(original)).approximate else { throw StoreError.invalid }
                 }
@@ -127,6 +134,8 @@ final class RecipeWorkbench: ObservableObject {
     }
     private func editedLUT15() throws -> [UInt16]? {
         guard curveEdited else { return nil }
+        // Reverting to the original editing points must not reconstruct a sampled imported table.
+        if points == baselinePoints { return nil }
         // Retain an imported 15-bit table when editing did not change its 8-bit visible curve.
         if try CurveLUT.make(points) == RecipePayload.lut8(template) { return nil }
         return try CurveLUT.make15(points)
@@ -142,19 +151,25 @@ final class RecipeWorkbench: ObservableObject {
         let parsed = try PictureControl614.parse(payload)
         template = payload; name = parsed.name
         points = try CurveLUT.sample(RecipePayload.lut8(payload))
+        baselinePoints = points
         curveEdited = false; self.metadata = metadata; presetFamily = family; self.legacyOriginal = legacyOriginal; message = notice
+    }
+    /// Called only for points validated at the source (AI, archive, share, preset, or local store).
+    private func restoreEditingPoints(_ value: [CurveLUT.Point]) {
+        points = value; baselinePoints = value; curveEdited = false
     }
     struct DraftIdentity: Equatable {
         let template: Data
         let name: String
         let points: [CurveLUT.Point]
+        let baselinePoints: [CurveLUT.Point]
         let curveEdited: Bool
         let metadata: ShareRecipe?
         let family: Int?
         let legacyOriginal: Data?
     }
     func draftIdentity() -> DraftIdentity {
-        DraftIdentity(template: template, name: name, points: points, curveEdited: curveEdited,
+        DraftIdentity(template: template, name: name, points: points, baselinePoints: baselinePoints, curveEdited: curveEdited,
                       metadata: metadata, family: presetFamily, legacyOriginal: legacyOriginal)
     }
     func useAI(_ result: AIRecipe) throws {
@@ -167,13 +182,13 @@ final class RecipeWorkbench: ObservableObject {
         }
         try adopt(payload, metadata: metadata,
                   notice: "已载入 AI 近似曲线；色彩建议仅供手机预览，不写入相机或 NCP。\(result.analysis)")
-        points = result.points
+        restoreEditingPoints(result.points)
     }
     func useBuiltIn(_ entry: BuiltInPreset) {
         do {
             try adopt(entry.makePayload(), metadata: entry.shareMetadata, family: entry.family,
                       notice: "已载入内置曲线；部分色彩参数仅在手机近似预览，不写入相机或 NCP。")
-            points = entry.points
+            restoreEditingPoints(entry.points)
         } catch { message = "内置预设无效；未替换当前草稿。" }
     }
     func exportArchive() throws -> Data {
@@ -189,7 +204,7 @@ final class RecipeWorkbench: ObservableObject {
                 let archive = try RecipeArchive.decode(data)
                 try adopt(archive.payload, metadata: archive.metadata, family: archive.family, legacyOriginal: archive.legacyOriginal,
                           notice: "已导入 ZBox 本地配方；载荷和预览参数已恢复，不会写入相机。")
-                points = archive.points
+                restoreEditingPoints(archive.points)
                 return
             }
             let imported = try RecipePayload.importFile(data)
@@ -208,10 +223,14 @@ final class RecipeWorkbench: ObservableObject {
     func save() {
         do {
             let data = try snapshot()
+            let savedPoints = points
+            _ = try CurveLUT.make(savedPoints)
             let entry = LocalRecipe(id: UUID(), name: try PictureControl614.parse(data).name,
-                                    payload: data, shareMetadata: metadata, family: presetFamily, legacyOriginal: legacyOriginal, savedAt: Date())
+                                    payload: data, shareMetadata: metadata, editPoints: savedPoints,
+                                    family: presetFamily, legacyOriginal: legacyOriginal, savedAt: Date())
             try persist([entry] + entries)
             try adopt(data, metadata: metadata, family: presetFamily, legacyOriginal: legacyOriginal, notice: "已保存到手机本地预设库；不会写入相机。")
+            restoreEditingPoints(savedPoints)
         } catch { message = "保存失败：请使用 1–19 个 ASCII 字符的名称，并检查本地预设库状态。" }
     }
     func remove(_ entry: LocalRecipe) {
@@ -219,7 +238,12 @@ final class RecipeWorkbench: ObservableObject {
         catch { message = "删除失败；未修改本地预设库。" }
     }
     func use(_ entry: LocalRecipe) {
-        do { try adopt(entry.payload, metadata: entry.shareMetadata, family: entry.family, legacyOriginal: entry.legacyOriginal, notice: "已载入本地预设；不会修改相机。") }
+        do {
+            // Validate before adopting so a bad entry cannot replace the current draft.
+            if let points = entry.editPoints { _ = try CurveLUT.make(points) }
+            try adopt(entry.payload, metadata: entry.shareMetadata, family: entry.family, legacyOriginal: entry.legacyOriginal, notice: "已载入本地预设；不会修改相机。")
+            if let points = entry.editPoints { restoreEditingPoints(points) }
+        }
         catch { message = "预设无效，未替换草稿。" }
     }
     func makeShareCode() {
@@ -237,7 +261,7 @@ final class RecipeWorkbench: ObservableObject {
             let lut = try CurveLUT.make(imported.points)
             let data = try RecipePayload.edit(template: RecipePayload.linearTemplate(), name: imported.name, lut: lut)
             try adopt(data, metadata: imported, notice: "快传码已近似重建曲线；部分参数仅用于手机近似预览，未写入相机或 NCP。")
-            points = imported.points; curveEdited = false
+            restoreEditingPoints(imported.points)
         } catch { message = "快传码无效或机身名称不是 ASCII；未替换当前草稿。" }
     }
 }
