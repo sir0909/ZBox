@@ -7,6 +7,8 @@ public enum RecipePayload {
         public let payload: Data
         public let description: String
         public let approximate: Bool
+        /// Only the old 84-byte layout has a recognized family byte. Metadata for local use only.
+        public let legacyFamily: Int?
     }
 
     public static func linearTemplate() -> Data {
@@ -53,11 +55,11 @@ public enum RecipePayload {
     public static func importFile(_ data: Data) throws -> Imported {
         if data.count == 614 {
             _ = try PictureControl614.parse(data)
-            return Imported(payload: data, description: "614 字节原始载荷", approximate: false)
+            return Imported(payload: data, description: "614 字节原始载荷", approximate: false, legacyFamily: nil)
         }
         if data.count == 618 && data.prefix(4) == Data([0x4e, 0x43, 0x50, 0]) {
             let payload = Data(data.dropFirst(4)); _ = try PictureControl614.parse(payload)
-            return Imported(payload: payload, description: "NCP 头 + 614 字节载荷", approximate: false)
+            return Imported(payload: payload, description: "NCP 头 + 614 字节载荷", approximate: false, legacyFamily: nil)
         }
         if data.count == 84 {
             let b = [UInt8](data), raw = Array(b[0..<20].prefix { $0 != 0 })
@@ -70,7 +72,7 @@ public enum RecipePayload {
             guard points.count >= 2 else { throw Error.invalidFile }
             let lut = try CurveLUT.make(points)
             let payload = try edit(template: linearTemplate(), name: name, lut: lut)
-            return Imported(payload: payload, description: "旧 84 字节结构，已近似转换；参数及其他曲线未保留", approximate: true)
+            return Imported(payload: payload, description: "旧 84 字节结构，已近似转换；类型仅作本地元数据，其他曲线未保留", approximate: true, legacyFamily: Int(b[0x18]))
         }
         throw Error.invalidFile
     }

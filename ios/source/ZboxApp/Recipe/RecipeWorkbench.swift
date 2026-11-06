@@ -112,7 +112,7 @@ final class RecipeWorkbench: ObservableObject {
     }
     func previewAdjustments() -> PreviewColorAdjustments? {
         guard let metadata else { return .neutral }
-        let mono = presetFamily == 1 || (presetFamily == nil && metadata.profile.uppercased() == "MONOCHROME")
+        let mono = presetFamily == 1 || (presetFamily == nil && ["MONOCHROME", "MONO"].contains(metadata.profile.uppercased()))
         return PreviewColorAdjustments(saturation: metadata.saturation, hue: metadata.hue,
                                        contrast: metadata.contrast, brightness: metadata.brightness, monochrome: mono)
     }
@@ -145,7 +145,16 @@ final class RecipeWorkbench: ObservableObject {
     func importBytes(_ data: Data) {
         do {
             let imported = try RecipePayload.importFile(data)
-            try adopt(imported.payload, notice: "已导入：\(imported.description)。" + (imported.approximate ? "这是近似转换，不能视为原文件无损还原。" : "原始 15 位 LUT 保留到编辑曲线为止。"))
+            var legacyMetadata: ShareRecipe?
+            if let family = imported.legacyFamily {
+                let profile: String
+                switch family { case 1: profile = "MONOCHROME"; case 2: profile = "SEPIA"; case 8: profile = "DREAM"; default: profile = "STANDARD" }
+                let parsed = try PictureControl614.parse(imported.payload)
+                legacyMetadata = ShareRecipe(name: parsed.name, profile: profile,
+                                             points: try CurveLUT.sample(RecipePayload.lut8(imported.payload)))
+            }
+            try adopt(imported.payload, metadata: legacyMetadata, family: imported.legacyFamily,
+                      notice: "已导入：\(imported.description)。" + (imported.approximate ? "这是近似转换，类型不会写入 NCP 或相机。" : "原始 15 位 LUT 保留到编辑曲线为止。"))
         } catch { message = "导入失败：文件格式不受支持或内容无效；没有修改草稿。" }
     }
     func save() {

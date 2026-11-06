@@ -105,4 +105,23 @@ final class RecipeWorkbenchTests: XCTestCase {
         XCTAssertEqual(try loaded.snapshot(), original)
     }
 
+    func testLegacyMonochromeTypeIsLocalMetadataNotPayload() throws {
+        let url = temporaryStore(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let workbench = RecipeWorkbench(storeURL: url)
+        var old = Data(repeating: 0, count: 84)
+        old.replaceSubrange(0..<4, with: Data("MONO".utf8)); old[0x18] = 1
+        for i in 0..<18 { old[0x1a + i] = UInt8(i * 15) }
+        workbench.importBytes(old)
+        XCTAssertEqual(workbench.presetFamily, 1)
+        XCTAssertEqual(workbench.metadata?.profile, "MONOCHROME")
+        XCTAssertTrue(try XCTUnwrap(workbench.previewAdjustments()).monochrome)
+        XCTAssertEqual(try workbench.snapshot()[0x2c], 5) // fallback template, not the old family byte
+        workbench.makeShareCode()
+        XCTAssertEqual(try RecipeShareCode.decode(workbench.shareText).profile, "MONOCHROME")
+        workbench.save()
+        let reopened = RecipeWorkbench(storeURL: url)
+        reopened.use(try XCTUnwrap(reopened.entries.first))
+        XCTAssertEqual(reopened.presetFamily, 1)
+    }
+
 }

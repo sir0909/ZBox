@@ -40,8 +40,9 @@ final class RecipeEngineTests: XCTestCase {
         var bytes = Data(repeating: 0, count: 84)
         bytes.replaceSubrange(0..<6, with: Data("LEGACY".utf8))
         for i in 0..<18 { bytes[0x1a + i] = UInt8(i * 15) }
+        bytes[0x18] = 1
         let imported = try RecipePayload.importFile(bytes)
-        XCTAssertTrue(imported.approximate); XCTAssertEqual(imported.payload.count, 614)
+        XCTAssertTrue(imported.approximate); XCTAssertEqual(imported.legacyFamily, 1); XCTAssertEqual(imported.payload.count, 614)
         XCTAssertEqual(try PictureControl614.parse(imported.payload).name, "LEGACY")
     }
     func testAndroidShareCodeKnownVectorAndRoundtrip() throws {
