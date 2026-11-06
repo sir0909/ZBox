@@ -32,10 +32,15 @@ struct PoseReferenceScreen: View {
     var body: some View {
         NavigationStack {
             List {
+                Section("姿势图库") {
+                    NavigationLink { PoseCatalogScreen() } label: { Label("打开 4155 张姿势图库", systemImage: "square.stack.3d.up") }
+                    Text("目录随应用提供；图片仅在你确认后从 GitHub 下载。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
                 referenceSection
                 phraseSection
                 Section {
-                    Text("参考图和话术只在手机本地使用，不调用 AI、不读取或更改相机，也不会修改系统相册中的原图。图库尚未移植；请添加自己的参考图。")
+                    Text("自己的参考图和话术只在手机本地使用，不调用 AI、不读取或更改相机，也不会修改系统相册中的原图。图库图片仅在确认后下载。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }

@@ -8,6 +8,8 @@ options:
 packages:
   ZboxCore:
     path: Packages/ZboxCore
+  ZIPFoundation:
+    path: Packages/ZIPFoundation
 
 targets:
   Zbox:
@@ -19,6 +21,8 @@ targets:
     dependencies:
       - package: ZboxCore
         product: ZboxCore
+      - package: ZIPFoundation
+        product: ZIPFoundation
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.zbox.ai
@@ -54,6 +58,8 @@ targets:
       - target: Zbox
       - package: ZboxCore
         product: ZboxCore
+      - package: ZIPFoundation
+        product: ZIPFoundation
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.zbox.ai.tests
