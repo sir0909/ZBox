@@ -47,6 +47,29 @@ public enum RecipePayload {
         }
         return Data(b)
     }
+    /// Direct 15-bit editing; nil or an identical table preserves the original control points and LUT bytes.
+    /// Other, unknown fields always remain those of the template.
+    public static func edit15(template: Data, name: String, lut: [UInt16]? = nil) throws -> Data {
+        let old = try PictureControl614.parse(template)
+        let nameBytes = Array(name.utf8)
+        guard !nameBytes.isEmpty, nameBytes.count <= 19, nameBytes.allSatisfy({ (0x20...0x7e).contains($0) }),
+              !name.trimmingCharacters(in: .whitespaces).isEmpty else { throw Error.invalidName }
+        if let lut, lut.count != 256 || lut.contains(where: { $0 > 32767 }) { throw Error.invalidLUT }
+        var b = [UInt8](template)
+        for i in 2..<22 { b[i] = 0 }
+        b.replaceSubrange(2..<(2 + nameBytes.count), with: nameBytes)
+        if let lut, lut != old.curve {
+            for i in 0..<256 {
+                b[0x66 + i * 2] = UInt8(lut[i] >> 8); b[0x67 + i * 2] = UInt8(lut[i] & 255)
+            }
+            for i in 0..<4 {
+                let x = i * 255 / 3
+                b[0x2f + i * 2] = UInt8(x)
+                b[0x30 + i * 2] = UInt8((UInt32(lut[x]) * 255 + 16383) / 32767)
+            }
+        }
+        return Data(b)
+    }
     public static func exportNCP(_ payload: Data) throws -> Data {
         _ = try PictureControl614.parse(payload)
         return Data([0x4e, 0x43, 0x50, 0]) + payload

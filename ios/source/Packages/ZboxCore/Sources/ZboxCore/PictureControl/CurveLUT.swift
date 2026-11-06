@@ -9,7 +9,20 @@ public enum CurveLUT {
     }
     public enum Error: Swift.Error, Equatable { case invalidPoints }
 
+    /// Android-compatible 8-bit curve for interchange and legacy callers.
     public static func make(_ points: [Point]) throws -> [UInt8] {
+        try samples(points).map { UInt8(max(0, min(255, Int($0.rounded(.toNearestOrEven))))) }
+    }
+
+    /// Sample the same interpolation directly at 15-bit precision, without an 8-bit intermediate.
+    public static func make15(_ points: [Point]) throws -> [UInt16] {
+        try samples(points).map { value in
+            let normalized = max(0, min(255, Double(value)))
+            return UInt16((normalized * 32767 / 255).rounded(.toNearestOrEven))
+        }
+    }
+
+    private static func samples(_ points: [Point]) throws -> [Float] {
         guard (2...20).contains(points.count), points.allSatisfy({ $0.x.isFinite && $0.y.isFinite && (0...255).contains($0.x) && (0...255).contains($0.y) }) else { throw Error.invalidPoints }
         let pts = points.sorted { $0.x < $1.x }
         guard zip(pts, pts.dropFirst()).allSatisfy({ $0.1.x - $0.0.x >= 0.5 }) else { throw Error.invalidPoints }
@@ -40,8 +53,8 @@ public enum CurveLUT {
         }
         return (0...255).map { integer in
             let x = Float(integer)
-            if x <= xs[0] { return UInt8(max(0, min(255, Int(ys[0].rounded(.toNearestOrEven))))) }
-            if x >= xs[n - 1] { return UInt8(max(0, min(255, Int(ys[n - 1].rounded(.toNearestOrEven))))) }
+            if x <= xs[0] { return ys[0] }
+            if x >= xs[n - 1] { return ys[n - 1] }
             var lo = 0, hi = n - 1
             while hi - lo > 1 { let mid = (lo + hi) / 2; if xs[mid] <= x { lo = mid } else { hi = mid } }
             let t = (x - xs[lo]) / h[lo], t2 = t * t, t3 = t2 * t
@@ -50,7 +63,7 @@ public enum CurveLUT {
             let p2 = (-2 * t3 + 3 * t2) * ys[lo + 1]
             let p3 = (t3 - t2) * h[lo] * m[lo + 1]
             let value = p0 + p1 + p2 + p3
-            return UInt8(max(0, min(255, Int(value.rounded(.toNearestOrEven)))))
+            return value
         }
     }
     public static func sample(_ lut: [UInt8], count: Int = 5) throws -> [Point] {

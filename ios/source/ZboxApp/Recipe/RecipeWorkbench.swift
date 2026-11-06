@@ -72,7 +72,9 @@ final class RecipeWorkbench: ObservableObject {
     }
     func setPoint(_ index: Int, y: Double) {
         guard points.indices.contains(index), y.isFinite else { return }
-        points[index].y = Float(max(0, min(255, y.rounded())))
+        let updated = Float(max(0, min(255, y.rounded())))
+        guard updated != points[index].y else { return }
+        points[index].y = updated
         curveEdited = true
     }
     func applyLocalPreset(_ kind: Int) {
@@ -116,12 +118,18 @@ final class RecipeWorkbench: ObservableObject {
         return PreviewColorAdjustments(saturation: metadata.saturation, hue: metadata.hue,
                                        contrast: metadata.contrast, brightness: metadata.brightness, monochrome: mono)
     }
+    private func editedLUT15() throws -> [UInt16]? {
+        guard curveEdited else { return nil }
+        // Retain an imported 15-bit table when editing did not change its 8-bit visible curve.
+        if try CurveLUT.make(points) == RecipePayload.lut8(template) { return nil }
+        return try CurveLUT.make15(points)
+    }
     func previewLUT() throws -> [UInt8] {
-        curveEdited ? try CurveLUT.make(points) : try RecipePayload.lut8(template)
+        guard let lut = try editedLUT15() else { return try RecipePayload.lut8(template) }
+        return lut.map { UInt8((UInt32($0) * 255 + 16383) / 32767) }
     }
     func snapshot() throws -> Data {
-        let lut = curveEdited ? try CurveLUT.make(points) : nil
-        return try RecipePayload.edit(template: template, name: name.trimmingCharacters(in: .whitespaces), lut: lut)
+        try RecipePayload.edit15(template: template, name: name.trimmingCharacters(in: .whitespaces), lut: editedLUT15())
     }
     func adopt(_ payload: Data, metadata: ShareRecipe? = nil, family: Int? = nil, notice: String) throws {
         let parsed = try PictureControl614.parse(payload)
@@ -160,8 +168,22 @@ final class RecipeWorkbench: ObservableObject {
             points = entry.points
         } catch { message = "内置预设无效；未替换当前草稿。" }
     }
+    func exportArchive() throws -> Data {
+        let payload = try snapshot()
+        var current = metadata
+        current?.name = try PictureControl614.parse(payload).name
+        current?.points = points
+        return try RecipeArchive.encode(payload: payload, points: points, metadata: current, family: presetFamily)
+    }
     func importBytes(_ data: Data) {
         do {
+            if data.first(where: { ![0x09, 0x0a, 0x0d, 0x20].contains($0) }) == 0x7b {
+                let archive = try RecipeArchive.decode(data)
+                try adopt(archive.payload, metadata: archive.metadata, family: archive.family,
+                          notice: "已导入 ZBox 本地配方；载荷和预览参数已恢复，不会写入相机。")
+                points = archive.points
+                return
+            }
             let imported = try RecipePayload.importFile(data)
             var legacyMetadata: ShareRecipe?
             if let family = imported.legacyFamily {

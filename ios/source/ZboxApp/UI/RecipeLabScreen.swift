@@ -17,6 +17,7 @@ struct RecipeLabScreen: View {
     @State private var importing = false
     @State private var exporting = false
     @State private var exportDocument: RecipeDocument?
+    @State private var exportFilename = "ZBOX.ncp"
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var referenceJPEG: Data?
     @State private var processedPNG: Data?
@@ -75,7 +76,7 @@ struct RecipeLabScreen: View {
                     Button("柔和") { workbench.applyLocalPreset(1) }
                     Button("反差") { workbench.applyLocalPreset(2) }
                 }.buttonStyle(.bordered)
-                Text("曲线图显示当前本地预览 LUT。导入的 LUT 可能无法由少量控制点精确表达；仅改名称保留原始 15 位 LUT，修改曲线后按 8 位重建。")
+                Text("曲线图显示当前本地预览 LUT。导入的 LUT 可能无法由少量控制点精确表达；仅改名称保留原始 15 位 LUT；调整控制点会近似重建 15 位曲线，仍可能丢失原曲线细节。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             localColorSection
@@ -102,13 +103,17 @@ struct RecipeLabScreen: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Section("本地文件") {
-                Button("导入 614B / NCP / 旧 84B") { importing = true }
+                Button("导入 ZBox 配方 / 614B / NCP / 旧 84B") { importing = true }
                 Button("导出 NCP（614B 包装）") {
-                    do { exportDocument = RecipeDocument(data: try RecipePayload.exportNCP(workbench.snapshot())); exporting = true }
+                    do { exportDocument = RecipeDocument(data: try RecipePayload.exportNCP(workbench.snapshot())); exportFilename = "\(workbench.name).ncp"; exporting = true }
                     catch { workbench.message = "导出失败：名称须为 1–19 个 ASCII 字符，且曲线须有效。" }
                 }
+                Button("导出 ZBox 配方（保留本地预览参数）") {
+                    do { exportDocument = RecipeDocument(data: try workbench.exportArchive()); exportFilename = "\(workbench.name).zboxrecipe"; exporting = true }
+                    catch { workbench.message = "导出失败：请检查名称、曲线和本地参数。" }
+                }
                 Button("保存到本地预设库") { workbench.save() }.disabled(!workbench.storeHealthy)
-                Text("仅支持明确识别的布局；旧 84B 为近似转换。导出不代表相机兼容。")
+                Text("ZBox 配方是本应用格式，保留载荷、控制点和本地预览参数；校验值不代表来源可信。NCP 不含预览参数；旧 84B 是近似转换，导出不代表相机兼容。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Section("安卓快传码") {
@@ -166,16 +171,21 @@ struct RecipeLabScreen: View {
                 let scoped = url.startAccessingSecurityScopedResource()
                 defer { if scoped { url.stopAccessingSecurityScopedResource() } }
                 let handle = try FileHandle(forReadingFrom: url); defer { try? handle.close() }
-                let data = try handle.read(upToCount: 619) ?? Data()
-                guard data.count <= 618 else { workbench.message = "文件超过支持的长度；未导入。"; return }
+                var data = Data()
+                while data.count <= 32_768 {
+                    let chunk = try handle.read(upToCount: min(4096, 32_769 - data.count)) ?? Data()
+                    if chunk.isEmpty { break }
+                    data.append(chunk)
+                }
+                guard data.count <= 32_768 else { workbench.message = "文件超过支持的长度；未导入。"; return }
                 workbench.importBytes(data)
                 updatePreview()
             } catch { workbench.message = "文件读取失败；未修改草稿。" }
         }
         .fileExporter(isPresented: $exporting, document: exportDocument, contentType: .data,
-                      defaultFilename: "\(workbench.name).ncp") { result in
+                      defaultFilename: exportFilename) { result in
             switch result {
-            case .success: workbench.message = "已导出本地 NCP；尚未验证机身兼容性。"
+            case .success: workbench.message = "已导出本地文件；不代表机身兼容性。"
             case .failure: workbench.message = "导出未完成；原草稿未改变。"
             }
         }

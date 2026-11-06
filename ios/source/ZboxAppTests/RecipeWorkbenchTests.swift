@@ -50,7 +50,7 @@ final class RecipeWorkbenchTests: XCTestCase {
         XCTAssertEqual(try workbench.previewLUT(), values)
         XCTAssertNotEqual(try CurveLUT.make(workbench.points), values)
         workbench.setPoint(2, y: 150)
-        XCTAssertEqual(try workbench.previewLUT(), try CurveLUT.make(workbench.points))
+        XCTAssertEqual(try workbench.previewLUT(), try RecipePayload.lut8(workbench.snapshot()))
     }
 
     func testBuiltInMonochromeFamilyAndMetadataSurviveLocalSave() throws {
@@ -143,6 +143,47 @@ final class RecipeWorkbenchTests: XCTestCase {
         sameVisibleCurve[0x67] = 7
         workbench.importBytes(sameVisibleCurve)
         XCTAssertNotEqual(unchanged, workbench.draftIdentity())
+    }
+
+    func testEditedCurveUsesFifteenBitPrecisionAndNoOpPreservesImportedBytes() throws {
+        let url = temporaryStore(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let workbench = RecipeWorkbench(storeURL: url)
+        var original = RecipePayload.linearTemplate(); original[0x67] = 7; original[0x50] = 0xab
+        workbench.importBytes(original)
+        workbench.setPoint(2, y: Double(workbench.points[2].y))
+        XCTAssertEqual(try workbench.snapshot(), original)
+        workbench.setPoint(2, y: 150)
+        let edited = try workbench.snapshot()
+        let lut15 = try CurveLUT.make15(workbench.points)
+        XCTAssertEqual(try PictureControl614.parse(edited).curve, lut15)
+        XCTAssertEqual(edited[0x50], 0xab)
+        XCTAssertEqual(try workbench.previewLUT(), try RecipePayload.lut8(edited))
+        let exported = try RecipePayload.exportNCP(edited)
+        XCTAssertEqual(try RecipePayload.importFile(exported).payload, edited)
+    }
+
+    func testZBoxArchiveRestoresPayloadEditingPointsAndPreviewMetadata() throws {
+        let url = temporaryStore(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let source = RecipeWorkbench(storeURL: url)
+        let preset = try XCTUnwrap(BuiltInPresetCatalog.load().first { $0.family == 1 })
+        source.useBuiltIn(preset)
+        source.name = "EXPORTED"
+        source.setPoint(2, y: 150)
+        source.setPreviewValue(.hue, value: -1.5)
+        let original = try source.snapshot(), expectedPoints = source.points
+        let file = try source.exportArchive()
+        let reopened = RecipeWorkbench(storeURL: temporaryStore())
+        reopened.importBytes(file)
+        XCTAssertEqual(try reopened.snapshot(), original)
+        XCTAssertEqual(reopened.points, expectedPoints)
+        XCTAssertEqual(reopened.presetFamily, 1)
+        XCTAssertEqual(reopened.previewValue(.hue), -1.5)
+        XCTAssertTrue(try XCTUnwrap(reopened.previewAdjustments()).monochrome)
+        let before = reopened.draftIdentity()
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: file) as? [String: Any])
+        json["sha256"] = String(repeating: "0", count: 64)
+        reopened.importBytes(try JSONSerialization.data(withJSONObject: json))
+        XCTAssertEqual(reopened.draftIdentity(), before)
     }
 
 }

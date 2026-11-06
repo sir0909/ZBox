@@ -54,4 +54,25 @@ final class RecipeEngineTests: XCTestCase {
         XCTAssertEqual(decoded, recipe)
         XCTAssertThrowsError(try RecipeShareCode.decode("ZCAI1:bad"))
     }
+    func testFifteenBitInterpolationAndExactBigEndianRoundTrip() throws {
+        let points: [CurveLUT.Point] = [.init(x: 0, y: 0), .init(x: 99, y: 142), .init(x: 255, y: 255)]
+        let lut15 = try CurveLUT.make15(points)
+        let lut8 = try CurveLUT.make(points)
+        XCTAssertEqual(lut15.count, 256); XCTAssertEqual(lut15.first, 0); XCTAssertEqual(lut15.last, 32767)
+        XCTAssertTrue(zip(lut15, lut15.dropFirst()).allSatisfy { $0.0 <= $0.1 })
+        XCTAssertTrue(zip(lut15, lut8).contains { high, low in high != UInt16((UInt32(low) * 32767 + 127) / 255) })
+        var template = RecipePayload.linearTemplate(); template[0x50] = 0xa5
+        let edited = try RecipePayload.edit15(template: template, name: "FIFTEEN", lut: lut15)
+        XCTAssertEqual(try PictureControl614.parse(edited).curve, lut15)
+        XCTAssertEqual(edited[0x50], 0xa5)
+        for i in 0..<256 {
+            XCTAssertEqual(edited[0x66 + 2 * i], UInt8(lut15[i] >> 8))
+            XCTAssertEqual(edited[0x67 + 2 * i], UInt8(lut15[i] & 255))
+        }
+        XCTAssertEqual(try RecipePayload.importFile(RecipePayload.exportNCP(edited)).payload, edited)
+        XCTAssertEqual(try RecipePayload.edit15(template: edited, name: "FIFTEEN", lut: lut15), edited)
+        XCTAssertThrowsError(try RecipePayload.edit15(template: template, name: "BAD", lut: [0]))
+        XCTAssertThrowsError(try RecipePayload.edit15(template: template, name: "BAD", lut: Array(repeating: 32768, count: 256)))
+    }
+
 }
