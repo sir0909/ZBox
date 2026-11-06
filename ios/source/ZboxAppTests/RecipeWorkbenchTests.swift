@@ -82,4 +82,27 @@ final class RecipeWorkbenchTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(workbench.previewAdjustments()).isNeutral)
     }
 
+    func testLocalColorEditsAffectPreviewAndShareButNotPayload() throws {
+        let url = temporaryStore(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let workbench = RecipeWorkbench(storeURL: url)
+        let original = try workbench.snapshot()
+        workbench.setPreviewValue(.saturation, value: 1.7)
+        workbench.setPreviewValue(.brightness, value: -20)
+        XCTAssertEqual(workbench.previewValue(.saturation), 1.5)
+        XCTAssertEqual(workbench.previewValue(.brightness), -2)
+        XCTAssertFalse(try XCTUnwrap(workbench.previewAdjustments()).isNeutral)
+        XCTAssertEqual(try workbench.snapshot(), original)
+        workbench.makeShareCode()
+        let shared = try RecipeShareCode.decode(workbench.shareText)
+        XCTAssertEqual(shared.saturation, 1.5); XCTAssertEqual(shared.brightness, -2)
+        workbench.save()
+        let loaded = RecipeWorkbench(storeURL: url)
+        loaded.use(try XCTUnwrap(loaded.entries.first))
+        XCTAssertEqual(loaded.previewValue(.saturation), 1.5)
+        XCTAssertEqual(loaded.previewValue(.brightness), -2)
+        loaded.resetPreviewColors()
+        XCTAssertTrue(try XCTUnwrap(loaded.previewAdjustments()).isNeutral)
+        XCTAssertEqual(try loaded.snapshot(), original)
+    }
+
 }

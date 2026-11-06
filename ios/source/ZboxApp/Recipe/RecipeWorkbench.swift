@@ -10,6 +10,20 @@ struct LocalRecipe: Codable, Identifiable {
     let savedAt: Date
 }
 
+enum LocalPreviewParameter: String, CaseIterable, Identifiable {
+    case brightness, contrast, saturation, hue
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .brightness: return "亮度"
+        case .contrast: return "对比度"
+        case .saturation: return "饱和度"
+        case .hue: return "色相"
+        }
+    }
+    var range: ClosedRange<Double> { self == .brightness ? -2...2 : -3...3 }
+}
+
 /// Local storage only; refuses to overwrite an unreadable store.
 @MainActor
 final class RecipeWorkbench: ObservableObject {
@@ -67,6 +81,34 @@ final class RecipeWorkbench: ObservableObject {
         points = zip([Float(0),64,128,191,255], ys[kind]).map { .init(x: $0.0, y: $0.1) }
         curveEdited = true
         message = "已载入本地示例曲线；尚未写入相机。"
+    }
+    func previewValue(_ parameter: LocalPreviewParameter) -> Double {
+        guard let metadata else { return 0 }
+        switch parameter {
+        case .brightness: return Double(metadata.brightness)
+        case .contrast: return Double(metadata.contrast)
+        case .saturation: return Double(metadata.saturation)
+        case .hue: return Double(metadata.hue)
+        }
+    }
+    func setPreviewValue(_ parameter: LocalPreviewParameter, value: Double) {
+        guard value.isFinite else { return }
+        let value = Float(max(parameter.range.lowerBound, min(parameter.range.upperBound, (value * 2).rounded() / 2)))
+        var recipe = metadata ?? ShareRecipe(name: name, points: points)
+        switch parameter {
+        case .brightness: recipe.brightness = value
+        case .contrast: recipe.contrast = value
+        case .saturation: recipe.saturation = value
+        case .hue: recipe.hue = value
+        }
+        metadata = recipe
+        message = "色彩参数只影响手机近似预览和快传码；不会写入 NCP 或相机。"
+    }
+    func resetPreviewColors() {
+        guard var recipe = metadata else { return }
+        recipe.brightness = 0; recipe.contrast = 0; recipe.saturation = 0; recipe.hue = 0
+        metadata = recipe
+        message = "已重置四项色彩调节；黑白类型、曲线和原始载荷不变。"
     }
     func previewAdjustments() -> PreviewColorAdjustments? {
         guard let metadata else { return .neutral }
