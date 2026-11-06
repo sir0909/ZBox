@@ -78,31 +78,7 @@ struct RecipeLabScreen: View {
                 Text("曲线图显示当前本地预览 LUT。导入的 LUT 可能无法由少量控制点精确表达；仅改名称保留原始 15 位 LUT，修改曲线后按 8 位重建。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
-            Section {
-                DisclosureGroup("手机预览色彩调节", isExpanded: $localColorExpanded) {
-                    ForEach(LocalPreviewParameter.allCases) { parameter in
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack {
-                                Text(parameter.title)
-                                Spacer()
-                                Text(workbench.previewValue(parameter), format: .number.precision(.fractionLength(1)))
-                                    .monospacedDigit().foregroundStyle(.secondary)
-                                    .accessibilityHidden(true)
-                            }
-                            Slider(value: Binding(get: { workbench.previewValue(parameter) },
-                                                  set: { workbench.setPreviewValue(parameter, value: $0) }),
-                                   in: parameter.range, step: 0.5)
-                                .accessibilityLabel("手机预览\(parameter.title)")
-                                .accessibilityValue(String(format: "%.1f", workbench.previewValue(parameter)))
-                                .frame(minHeight: 44)
-                        }
-                    }
-                    Button("重置四项调节") { workbench.resetPreviewColors() }
-                        .disabled(workbench.metadata == nil)
-                    Text("这些设置只影响手机近似预览，并随本地预设和快传码保存；不会写入导出的 NCP 或相机。黑白类型仍由预设决定。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-            }
+            localColorSection
             Section("AI 参考图逆向 · 实验功能") {
                 DisclosureGroup("服务配置", isExpanded: $aiSettingsExpanded) {
                     TextField("HTTPS Base URL（不含 /chat/completions）", text: $aiBaseURL)
@@ -204,6 +180,34 @@ struct RecipeLabScreen: View {
             }
         }
     }
+    private var localColorSection: some View {
+        Section {
+            DisclosureGroup("手机预览色彩调节", isExpanded: $localColorExpanded) {
+                ForEach(LocalPreviewParameter.allCases) { parameter in
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(parameter.title)
+                            Spacer()
+                            Text(workbench.previewValue(parameter), format: .number.precision(.fractionLength(1)))
+                                .monospacedDigit().foregroundStyle(.secondary)
+                                .accessibilityHidden(true)
+                        }
+                        Slider(value: Binding(get: { workbench.previewValue(parameter) },
+                                              set: { workbench.setPreviewValue(parameter, value: $0) }),
+                               in: parameter.range, step: 0.5)
+                            .accessibilityLabel("手机预览\(parameter.title)")
+                            .accessibilityValue(String(format: "%.1f", workbench.previewValue(parameter)))
+                            .frame(minHeight: 44)
+                    }
+                }
+                Button("重置四项调节") { workbench.resetPreviewColors() }
+                    .disabled(workbench.metadata == nil)
+                Text("这些设置只影响手机近似预览，并随本地预设和快传码保存；不会写入导出的 NCP 或相机。黑白类型仍由预设决定。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+    }
+
     private var aiKeyButtons: some View {
         Group {
             Button("保存 Key") { saveAIKey() }
