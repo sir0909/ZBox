@@ -28,6 +28,43 @@ final class ReferencePreviewTests: XCTestCase {
         XCTAssertNil(ReferencePreview.apply(jpeg: input, lut: [0]))
         XCTAssertNil(ReferencePreview.apply(jpeg: Data([0]), lut: (0...255).map(UInt8.init)))
     }
+    func testPickerThumbnailRemovesGPSAndAppliesSizeBoundWithoutChangingSource() throws {
+        let info = CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.premultipliedLast.rawValue
+        let context = try XCTUnwrap(CGContext(data: nil, width: 800, height: 8, bitsPerComponent: 8,
+                                              bytesPerRow: 800 * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: info))
+        context.setFillColor(CGColor(red: 0.8, green: 0.4, blue: 0.2, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 800, height: 8))
+        let image = try XCTUnwrap(context.makeImage())
+        let data = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(data as CFMutableData, UTType.jpeg.identifier as CFString, 1, nil))
+        let properties: [CFString: Any] = [
+            kCGImagePropertyOrientation: 6,
+            kCGImagePropertyGPSDictionary: [kCGImagePropertyGPSLatitude: 35.6, kCGImagePropertyGPSLatitudeRef: "N",
+                                            kCGImagePropertyGPSLongitude: 140.1, kCGImagePropertyGPSLongitudeRef: "E"],
+            kCGImagePropertyExifDictionary: [kCGImagePropertyExifDateTimeOriginal: "2025:01:02 03:04:05"]
+        ]
+        CGImageDestinationAddImage(destination, image, properties as CFDictionary)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        let original = data as Data
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".jpg")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try original.write(to: url)
+        let inputSource = try XCTUnwrap(CGImageSourceCreateWithData(original as CFData, nil))
+        let inputProps = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(inputSource, 0, nil) as? [CFString: Any])
+        XCTAssertNotNil(inputProps[kCGImagePropertyGPSDictionary])
+        let thumbnail = try ReferenceThumbnail.readFile(url)
+        let source = try XCTUnwrap(CGImageSourceCreateWithData(thumbnail.jpeg as CFData, nil))
+        let outputProps = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any])
+        XCTAssertNil(outputProps[kCGImagePropertyGPSDictionary])
+        let exif = outputProps[kCGImagePropertyExifDictionary] as? [CFString: Any]
+        XCTAssertNil(exif?[kCGImagePropertyExifDateTimeOriginal])
+        let outWidth = try XCTUnwrap(outputProps[kCGImagePropertyPixelWidth] as? Int)
+        let outHeight = try XCTUnwrap(outputProps[kCGImagePropertyPixelHeight] as? Int)
+        XCTAssertLessThanOrEqual(max(outWidth, outHeight), 768)
+        XCTAssertGreaterThan(outHeight, outWidth) // original orientation 6 has been applied
+        XCTAssertEqual(try Data(contentsOf: url), original)
+    }
+
     func testPreviewAppliesMonochromeWithoutChangingInput() throws {
         var pixel: [UInt8] = [200, 60, 20, 255]
         let info = CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.premultipliedLast.rawValue

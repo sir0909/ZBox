@@ -11,20 +11,24 @@ struct ReferenceThumbnail: Transferable, Sendable {
     let jpeg: Data
     static var transferRepresentation: some TransferRepresentation {
         FileRepresentation(importedContentType: .image) { received in
-            guard let source = CGImageSourceCreateWithURL(received.file as CFURL, nil),
-                  let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-                  let width = properties[kCGImagePropertyPixelWidth] as? Int,
-                  let height = properties[kCGImagePropertyPixelHeight] as? Int,
-                  width > 0, height > 0, width <= 20_000, height <= 20_000,
-                  Int64(width) * Int64(height) <= 100_000_000 else { throw PreviewError.invalidImage }
-            let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceThumbnailMaxPixelSize: 768, kCGImageSourceCreateThumbnailWithTransform: true]
-            guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary),
-                  let data = ReferencePreview.encode(image, type: UTType.jpeg.identifier as CFString), data.count <= 2_000_000 else {
-                throw PreviewError.invalidImage
-            }
-            return ReferenceThumbnail(jpeg: data)
+            try readFile(received.file)
         }
+    }
+    /// Shared by the photo picker and tests: downsample with orientation and do not copy source metadata.
+    static func readFile(_ url: URL) throws -> ReferenceThumbnail {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              width > 0, height > 0, width <= 20_000, height <= 20_000,
+              Int64(width) * Int64(height) <= 100_000_000 else { throw PreviewError.invalidImage }
+        let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: 768, kCGImageSourceCreateThumbnailWithTransform: true]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary),
+              let data = ReferencePreview.encode(image, type: UTType.jpeg.identifier as CFString), data.count <= 2_000_000 else {
+            throw PreviewError.invalidImage
+        }
+        return ReferenceThumbnail(jpeg: data)
     }
     enum PreviewError: Error { case invalidImage }
 }
