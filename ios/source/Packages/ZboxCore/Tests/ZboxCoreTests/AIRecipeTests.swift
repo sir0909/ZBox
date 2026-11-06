@@ -21,4 +21,17 @@ final class AIRecipeTests: XCTestCase {
         XCTAssertThrowsError(try AIRecipe.parse(json("[{\"x\":0,\"y\":0},{\"x\":255,\"y\":255}]", name: "中文")))
         XCTAssertThrowsError(try AIRecipe.parse(Data(repeating: 65, count: 16_385)))
     }
+    func testOptionalPreviewSuggestionsAreBoundedAndBackwardCompatible() throws {
+        let base = "\"preset_name\":\"AI_CURVE\",\"tone_curve_points\":[{\"x\":0,\"y\":0},{\"x\":255,\"y\":255}],\"style_analysis\":\"ok\""
+        let legacy = try AIRecipe.parse(Data("{\(base)}".utf8))
+        XCTAssertNil(legacy.previewSuggestion)
+        let good = Data("{\(base),\"preview_adjustments\":{\"brightness\":1,\"contrast\":-2,\"saturation\":0.5,\"hue\":3}}".utf8)
+        let result = try AIRecipe.parse(good)
+        XCTAssertEqual(result.previewSuggestion?.saturation, 0.5)
+        let bad = Data("{\(base),\"preview_adjustments\":{\"brightness\":3,\"contrast\":0,\"saturation\":0,\"hue\":0}}".utf8)
+        XCTAssertThrowsError(try AIRecipe.parse(bad))
+        let incomplete = Data("{\(base),\"preview_adjustments\":{\"brightness\":0}}".utf8)
+        XCTAssertThrowsError(try AIRecipe.parse(incomplete))
+    }
+
 }

@@ -124,4 +124,25 @@ final class RecipeWorkbenchTests: XCTestCase {
         XCTAssertEqual(reopened.presetFamily, 1)
     }
 
+    func testAIColorSuggestionIsPreviewOnlyAndDraftIdentityTracksChanges() throws {
+        let url = temporaryStore(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let workbench = RecipeWorkbench(storeURL: url)
+        let identity = workbench.draftIdentity()
+        workbench.setPreviewValue(.saturation, value: 1)
+        XCTAssertNotEqual(identity, workbench.draftIdentity())
+        let json = """
+        {"preset_name":"AI_CURVE","tone_curve_points":[{"x":0,"y":0},{"x":255,"y":255}],"style_analysis":"ok","preview_adjustments":{"brightness":0.5,"contrast":-1,"saturation":2,"hue":1}}
+        """
+        let result = try AIRecipe.parse(Data(json.utf8))
+        try workbench.useAI(result)
+        XCTAssertEqual(workbench.previewValue(.saturation), 2)
+        XCTAssertEqual(workbench.previewValue(.brightness), 0.5)
+        XCTAssertEqual(try workbench.snapshot(), try RecipePayload.edit(template: RecipePayload.linearTemplate(), name: "AI_CURVE"))
+        let unchanged = workbench.draftIdentity()
+        var sameVisibleCurve = try workbench.snapshot()
+        sameVisibleCurve[0x67] = 7
+        workbench.importBytes(sameVisibleCurve)
+        XCTAssertNotEqual(unchanged, workbench.draftIdentity())
+    }
+
 }

@@ -98,7 +98,7 @@ struct RecipeLabScreen: View {
                     .disabled(referenceJPEG == nil || aiBusy)
                 if aiBusy { ProgressView("等待服务商响应…") }
                 Text(aiMessage).font(.footnote).foregroundStyle(.secondary)
-                Text("仅生成全局曲线，不生成真实色彩匹配或机身参数；效果依赖服务商，可能产生费用。Key 仅保存在此设备钥匙串中。")
+                Text("生成近似全局曲线和可选的手机色彩预览建议，不生成真实色彩匹配或机身参数；服务商可能计费。Key 仅保存在此设备钥匙串中。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Section("本地文件") {
@@ -307,15 +307,20 @@ struct RecipeLabScreen: View {
             let base = try AIKeyStore.validatedBase(aiBaseURL)
             let key = try AIKeyStore.read(base: base)
             let model = aiModel, hint = aiHint, generation = referenceGeneration
+            let draft = workbench.draftIdentity()
             aiBusy = true; aiMessage = "已获得本次上传确认，正在生成…"
             aiTask = Task {
                 defer { aiBusy = false }
                 do {
                     let result = try await AIGrading.analyze(base: base, model: model, key: key, jpeg: jpeg, hint: hint)
-                    guard !Task.isCancelled, generation == referenceGeneration else { return }
+                    guard !Task.isCancelled else { return }
+                    guard generation == referenceGeneration, draft == workbench.draftIdentity() else {
+                        aiMessage = "参考图或草稿已更改，本次结果未应用；服务商可能已收到图片。"
+                        return
+                    }
                     try workbench.useAI(result)
                     updatePreview()
-                    aiMessage = "已载入 AI 近似曲线；请检查效果，不会自动写入相机。"
+                    aiMessage = "已载入 AI 近似结果；色彩建议仅用于手机预览，不会写入 NCP 或相机。"
                 } catch is CancellationError { aiMessage = "请求已取消，服务商可能已收到数据。" }
                 catch { if !Task.isCancelled { aiMessage = "生成失败或输出未通过校验；草稿未改变。请检查配置、网络和视觉模型。" } }
             }

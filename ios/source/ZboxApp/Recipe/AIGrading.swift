@@ -43,7 +43,7 @@ enum AIKeyStore {
 }
 
 /// Redirects are forbidden, so Authorization and image cannot be forwarded to another endpoint.
-private final class NoRedirects: NSObject, URLSessionTaskDelegate {
+final class NoRedirects: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
         completionHandler(nil)
@@ -51,15 +51,17 @@ private final class NoRedirects: NSObject, URLSessionTaskDelegate {
 }
 
 enum AIGrading {
-    enum Failure: Error { case invalid, http(Int), responseTooLarge, missingContent }
+    enum Failure: Error, Equatable { case invalid, http(Int), responseTooLarge, missingContent }
     private static let prompt = """
     Analyze the reference image's tonal character. Return ONLY one JSON object, no markdown:
-    {"preset_name":"AI_CURVE","tone_curve_points":[{"x":0,"y":0},{"x":128,"y":128},{"x":255,"y":255}],"style_analysis":"brief Chinese description"}.
-    Name: 1-19 printable ASCII characters. 2-8 points, x strictly increasing from 0 to 255, y non-decreasing, both 0-255. Suggest only an approximate global RGB tone curve; no LUTs, color channels, or camera control. Do not claim exact camera reproduction.
+    {"preset_name":"AI_CURVE","tone_curve_points":[{"x":0,"y":0},{"x":128,"y":128},{"x":255,"y":255}],"preview_adjustments":{"brightness":0,"contrast":0,"saturation":0,"hue":0},"style_analysis":"brief Chinese description"}.
+    Name: 1-19 printable ASCII characters. 2-8 points, x strictly increasing from 0 to 255, y non-decreasing, both 0-255. Optional preview_adjustments: brightness -2 to 2; contrast, saturation and hue each -3 to 3. These values are rough phone-preview suggestions only, never camera settings. Do not claim exact reproduction or control of a camera.
     """
     static func request(base: URL, model: String, key: String, jpeg: Data, hint: String) throws -> URLRequest {
-        guard base.scheme?.lowercased() == "https", !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              model.utf8.count <= 160, !key.isEmpty, jpeg.count <= 2_000_000, !jpeg.isEmpty, hint.utf8.count <= 1000 else { throw Failure.invalid }
+        guard (try? AIKeyStore.validatedBase(base.absoluteString)) != nil,
+              !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, model.utf8.count <= 160,
+              !key.isEmpty, key.utf8.count <= 4096, !key.contains("\n"), !key.contains("\r"),
+              jpeg.count <= 2_000_000, !jpeg.isEmpty, hint.utf8.count <= 1000 else { throw Failure.invalid }
         let url = base.appendingPathComponent("chat").appendingPathComponent("completions")
         let user: [[String: Any]] = [
             ["type": "text", "text": "参考要求：\(hint)"],
@@ -86,6 +88,11 @@ enum AIGrading {
         let session = URLSession(configuration: config, delegate: NoRedirects(), delegateQueue: nil)
         defer { session.invalidateAndCancel() }
         let (stream, response) = try await session.bytes(for: req)
+        return try await collect(stream, response: response)
+    }
+
+    /// Bounds streaming before decoding; accepts any async byte sequence for offline tests.
+    static func collect<Bytes: AsyncSequence>(_ stream: Bytes, response: URLResponse) async throws -> AIRecipe where Bytes.Element == UInt8 {
         guard let http = response as? HTTPURLResponse else { throw Failure.invalid }
         guard (200...299).contains(http.statusCode) else { throw Failure.http(http.statusCode) }
         if http.expectedContentLength > 262_144 { throw Failure.responseTooLarge }

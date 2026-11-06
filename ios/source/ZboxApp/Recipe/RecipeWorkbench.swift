@@ -129,10 +129,28 @@ final class RecipeWorkbench: ObservableObject {
         points = try CurveLUT.sample(RecipePayload.lut8(payload))
         curveEdited = false; self.metadata = metadata; presetFamily = family; message = notice
     }
+    struct DraftIdentity: Equatable {
+        let template: Data
+        let name: String
+        let points: [CurveLUT.Point]
+        let curveEdited: Bool
+        let metadata: ShareRecipe?
+        let family: Int?
+    }
+    func draftIdentity() -> DraftIdentity {
+        DraftIdentity(template: template, name: name, points: points, curveEdited: curveEdited,
+                      metadata: metadata, family: presetFamily)
+    }
     func useAI(_ result: AIRecipe) throws {
         let payload = try RecipePayload.edit(template: RecipePayload.linearTemplate(), name: result.name,
                                              lut: CurveLUT.make(result.points))
-        try adopt(payload, notice: "已载入 AI 近似曲线，未写入相机。\(result.analysis)")
+        var metadata: ShareRecipe?
+        if let suggestion = result.previewSuggestion {
+            metadata = ShareRecipe(name: result.name, contrast: suggestion.contrast, brightness: suggestion.brightness,
+                                   saturation: suggestion.saturation, hue: suggestion.hue, points: result.points)
+        }
+        try adopt(payload, metadata: metadata,
+                  notice: "已载入 AI 近似曲线；色彩建议仅供手机预览，不写入相机或 NCP。\(result.analysis)")
         points = result.points
     }
     func useBuiltIn(_ entry: BuiltInPreset) {
