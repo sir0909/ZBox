@@ -1258,8 +1258,9 @@ final class CameraConnectionModel: ObservableObject {
     }
 
     func downloadSTAItem(_ item: NikonSTAAlbumItem) async {
+        // Never orphan an earlier successful temporary download by replacing its only UI reference.
         guard let active = session, connectedSTA, operationPolicy.permits(.album), !albumVerifyBusy,
-              albumItems.contains(item) else { return }
+              albumDownloadURL == nil, albumItems.contains(item) else { return }
         albumBusy = true
         albumCancelRequested = false
         albumProgress = 0
@@ -1289,7 +1290,7 @@ final class CameraConnectionModel: ObservableObject {
             albumDownloadURL = completed.url
             albumDownloadSHA256 = completed.receivedSHA256
             albumDownloadBytes = size
-            albumMessage = "下载完成；请使用分享保存。名称为占位名，临时文件可能被系统清理。"
+            albumMessage = "下载完成；请先分享保存，再删除临时副本以下载下一项。临时文件可能被系统清理。"
             log.add("STA 相册原文件下载完成，长度已核对；本地接收摘要不代表源文件内容已校验")
         } catch is CancellationError {
             if session === active { albumMessage = "下载已取消；不完整文件已删除" }
@@ -1320,7 +1321,16 @@ final class CameraConnectionModel: ObservableObject {
             albumVerifyMessage = ""
             albumMessage = "已删除应用临时文件；相机文件和已分享的副本不受影响。"
         } catch {
-            albumMessage = "无法删除临时文件（可能已被系统清理）：\(describe(error))"
+            let error = error as NSError
+            // Only a definite missing-file result may clear the stale reference. Permission
+            // errors and other ambiguous failures keep the existing item visible.
+            if error.domain == NSCocoaErrorDomain && error.code == NSFileNoSuchFileError {
+                albumDownloadURL = nil; albumDownloadSHA256 = nil; albumDownloadBytes = nil
+                albumVerifyMessage = ""
+                albumMessage = "临时文件已不存在，已移除失效记录；相机文件不受影响。"
+            } else {
+                albumMessage = "无法删除临时文件，已保留记录：\(describe(error))"
+            }
         }
     }
 

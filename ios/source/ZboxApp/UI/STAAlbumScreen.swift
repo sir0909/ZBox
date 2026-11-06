@@ -51,7 +51,7 @@ struct STAAlbumScreen: View {
                     ShareLink(item: url) { Label("分享 / 保存已下载文件", systemImage: "square.and.arrow.up") }
                     Button("删除应用临时文件", role: .destructive) { confirmingLocalDelete = true }
                         .disabled(model.albumBusy || model.albumVerifyBusy)
-                    Text("文件暂存在应用临时目录，请及时分享保存；不自动写入照片图库。")
+                    Text("文件暂存在应用临时目录，请先分享保存，再删除临时副本才能下载下一项；不自动写入照片图库。")
                         .font(.footnote).foregroundStyle(.secondary)
                     if let sha256 = model.albumDownloadSHA256 {
                         Text("接收数据 SHA-256（可用于后续比对）").font(.caption)
@@ -147,7 +147,8 @@ struct STAAlbumScreen: View {
                                 }
                                 Text(item.placeholderName).font(.caption2).lineLimit(1)
                                 Text(item.capturedAt ?? "时间未知").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                                Button("下载") { selected = item; confirming = true }.font(.caption)
+                                Button("下载") { selected = item; confirming = true }
+                                    .font(.caption).disabled(model.albumDownloadURL != nil)
                             }
                             .buttonStyle(.borderless)
                             .disabled(model.albumBusy || model.albumVerifyBusy || model.liveViewBusy || model.captureBusy || model.focusBusy || model.movieBusy || model.movieMayBeActive || model.exposureBusy || model.batteryBusy || model.slotsBusy || model.monitorBusy || model.pairingBusy || model.pairingPrepared || model.phase != .connected)
@@ -169,7 +170,7 @@ struct STAAlbumScreen: View {
             Button("删除临时文件", role: .destructive) { model.deleteDownloadedAlbumFile() }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("仅删除此下载的应用临时副本，不删除相机文件或已分享的副本。")
+            Text("删除前请确认已通过分享另存；仅删除此下载的应用临时副本，不删除相机文件或已分享的副本。")
         }
         .onAppear { isVisible = true }
         .onDisappear { isVisible = false; model.cancelAlbumWork(); model.cancelAlbumVerification() }

@@ -254,6 +254,33 @@ final class CameraLifecycleTests: XCTestCase {
         XCTAssertTrue(ops.contains(0x9431))
         await model.disconnect()
     }
+    func testCompletedAlbumDownloadIsNotLostWhenAnotherStarts() async throws {
+        let (model, command, _) = try await makeModel(pausedOp: 0xFFFF)
+        await model.loadSTAAlbum()
+        let item = try XCTUnwrap(model.albumItems.first)
+        await model.downloadSTAItem(item)
+        let firstURL = try XCTUnwrap(model.albumDownloadURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: firstURL.path))
+        let before = await command.operations()
+        await model.downloadSTAItem(item)
+        let after = await command.operations()
+        XCTAssertEqual(model.albumDownloadURL, firstURL)
+        XCTAssertEqual(after.filter { $0 == 0x9421 }.count, before.filter { $0 == 0x9421 }.count)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: firstURL.path))
+        model.deleteDownloadedAlbumFile()
+        XCTAssertNil(model.albumDownloadURL)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: firstURL.path))
+        await model.downloadSTAItem(item)
+        let secondURL = try XCTUnwrap(model.albumDownloadURL)
+        // iOS may purge a temporary file. Explicit removal then clears only the stale
+        // reference so a subsequent download is not permanently blocked.
+        try FileManager.default.removeItem(at: secondURL)
+        model.deleteDownloadedAlbumFile()
+        XCTAssertNil(model.albumDownloadURL)
+        XCTAssertTrue(model.albumMessage.contains("已不存在"))
+        await model.disconnect()
+    }
+
     func testDisconnectDuringAlbumReadDoesNotPublishStaleResults() async throws {
         let (model, command, pause) = try await makeModel(pausedOp: 0x1004)
         let loading = Task { await model.loadSTAAlbum() }
