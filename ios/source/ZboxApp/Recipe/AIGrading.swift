@@ -82,7 +82,21 @@ enum AIGrading {
     }
     static func analyze(base: URL, model: String, key: String, jpeg: Data, hint: String) async throws -> AIRecipe {
         let req = try request(base: base, model: model, key: key, jpeg: jpeg, hint: hint)
+        return try await perform(req)
+    }
+    #if DEBUG
+    /// Test-only injection; production always uses the system HTTPS transport.
+    static func analyzeForTesting(base: URL, model: String, key: String, jpeg: Data, hint: String,
+                                  protocolClass: AnyClass) async throws -> AIRecipe {
+        let req = try request(base: base, model: model, key: key, jpeg: jpeg, hint: hint)
+        return try await perform(req, protocolClass: protocolClass)
+    }
+    #endif
+    private static func perform(_ req: URLRequest, protocolClass: AnyClass? = nil) async throws -> AIRecipe {
         let config = URLSessionConfiguration.ephemeral
+        #if DEBUG
+        if let protocolClass { config.protocolClasses = [protocolClass] }
+        #endif
         config.urlCache = nil; config.urlCredentialStorage = nil; config.httpCookieStorage = nil
         config.timeoutIntervalForRequest = 90; config.timeoutIntervalForResource = 120
         let session = URLSession(configuration: config, delegate: NoRedirects(), delegateQueue: nil)

@@ -73,4 +73,48 @@ final class AIGradingTests: XCTestCase {
         XCTAssertThrowsError(try AIGrading.request(base: URL(string: "https://example.com/v1")!, model: "v", key: "secret\nother", jpeg: image, hint: ""))
     }
 
+    func testCompleteOfflineRequestAndValidation() async throws {
+        let base = URL(string: "https://camera-ai.invalid/success")!
+        let result = try await AIGrading.analyzeForTesting(base: base, model: "offline-model", key: "offline-test-key",
+                                                            jpeg: Data([1, 2, 3]), hint: "test", protocolClass: OfflineAIProtocol.self)
+        XCTAssertEqual(result.name, "MOCK_AI")
+        XCTAssertEqual(result.previewSuggestion?.saturation, 1)
+        do {
+            _ = try await AIGrading.analyzeForTesting(base: URL(string: "https://camera-ai.invalid/unauthorized")!,
+                                                       model: "offline-model", key: "offline-test-key", jpeg: Data([1]), hint: "",
+                                                       protocolClass: OfflineAIProtocol.self)
+            XCTFail("expected unauthorized")
+        } catch { XCTAssertEqual(error as? AIGrading.Failure, .http(401)) }
+        do {
+            _ = try await AIGrading.analyzeForTesting(base: URL(string: "https://camera-ai.invalid/bad")!,
+                                                       model: "offline-model", key: "offline-test-key", jpeg: Data([1]), hint: "",
+                                                       protocolClass: OfflineAIProtocol.self)
+            XCTFail("expected untrusted output rejection")
+        } catch { XCTAssertFalse(error is AIGrading.Failure) }
+    }
+
+}
+
+
+/// A deterministic in-process provider. The .invalid domain cannot reach a real provider.
+private final class OfflineAIProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "camera-ai.invalid" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        guard let url = request.url, request.httpMethod == "POST",
+              request.value(forHTTPHeaderField: "Authorization") == "Bearer offline-test-key" else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse)); return
+        }
+        let status = url.path.hasPrefix("/unauthorized/") ? 401 : 200
+        let brightness = url.path.hasPrefix("/bad/") ? 9 : 1
+        let content = "{\"preset_name\":\"MOCK_AI\",\"tone_curve_points\":[{\"x\":0,\"y\":0},{\"x\":255,\"y\":255}],\"style_analysis\":\"offline\",\"preview_adjustments\":{\"brightness\":\(brightness),\"contrast\":0,\"saturation\":1,\"hue\":0}}"
+        guard let body = try? JSONSerialization.data(withJSONObject: ["choices": [["message": ["content": content]]]]),
+              let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"]) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse)); return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
 }
