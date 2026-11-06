@@ -40,4 +40,17 @@ final class RecipeWorkbenchTests: XCTestCase {
         let renamed = try workbench.snapshot()
         XCTAssertEqual(Data(renamed[0x2f..<614]), Data(original[0x2f..<614]))
     }
+    func testImportedLUTDrivesPreviewUntilCurveEdited() throws {
+        let url = temporaryStore(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let workbench = RecipeWorkbench(storeURL: url)
+        var values = (0...255).map(UInt8.init)
+        values[33] = 90 // Not one of the sampled control points.
+        let imported = try RecipePayload.edit(template: RecipePayload.linearTemplate(), name: "IMPORTED", lut: values)
+        workbench.importBytes(imported)
+        XCTAssertEqual(try workbench.previewLUT(), values)
+        XCTAssertNotEqual(try CurveLUT.make(workbench.points), values)
+        workbench.setPoint(2, y: 150)
+        XCTAssertEqual(try workbench.previewLUT(), CurveLUT.make(workbench.points))
+    }
+
 }

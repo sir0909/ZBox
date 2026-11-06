@@ -23,6 +23,10 @@ struct RecipeLabScreen: View {
     @State private var showOriginal = false
     @State private var referenceGeneration = UUID()
     @State private var previewTask: Task<Void, Never>?
+    @State private var previewGeneration = UUID()
+    @State private var previewPending = false
+    @State private var previewFailed = false
+    @State private var aiSettingsExpanded = false
     @AppStorage("ai.baseURL") private var aiBaseURL = "https://open.bigmodel.cn/api/paas/v4"
     @AppStorage("ai.model") private var aiModel = "glm-4v-flash"
     @State private var keyInput = ""
@@ -33,83 +37,66 @@ struct RecipeLabScreen: View {
     @State private var aiTask: Task<Void, Never>?
 
 
-    private var curve: [UInt8] { (try? CurveLUT.make(workbench.points)) ?? (0...255).map(UInt8.init) }
+    private var curve: [UInt8] { (try? workbench.previewLUT()) ?? (0...255).map(UInt8.init) }
     var body: some View {
         List {
             Section {
-                Text("RECIPE LAB / 本地配方工作台").font(.caption.bold()).foregroundStyle(.yellow)
-                Text("M3 开发中：本页本地编辑；AI 仅经确认后联网，不写入机身。")
-                    .font(.footnote).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("本地草稿", systemImage: "slider.horizontal.3")
+                        .font(.headline)
+                    Text("在手机上编辑曲线，预览为近似效果，不会写入相机。")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }.padding(.vertical, 4)
                 TextField("机身名称（1–19 个 ASCII 字符）", text: $workbench.name)
                     .textInputAutocapitalization(.characters).autocorrectionDisabled()
+                    .accessibilityLabel("机身名称，1 到 19 个 ASCII 字符")
                 Text(workbench.message).font(.footnote).foregroundStyle(.secondary)
             }
-            Section("参考图 · 手机本地预览") {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.12))
-                    if let data = (showOriginal ? referenceJPEG : processedPNG ?? referenceJPEG), let image = UIImage(data: data) {
-                        Image(uiImage: image).resizable().scaledToFit().clipShape(RoundedRectangle(cornerRadius: 8))
-                    } else {
-                        Label("请选择参考图", systemImage: "photo").foregroundStyle(.secondary)
-                    }
-                }.frame(maxWidth: .infinity).frame(height: 220).clipped()
-                HStack {
-                    PhotosPicker(selection: $selectedPhoto, matching: .images) { Label("选择参考图", systemImage: "photo.on.rectangle") }
-                    Button(showOriginal ? "显示效果" : "显示原图") { showOriginal.toggle() }
-                        .disabled(referenceJPEG == nil)
-                }.buttonStyle(.bordered)
-                Text("仅在手机内生成最长边 768 像素的近似预览；本功能不上传、不修改原图，系统可能从 iCloud 下载。不代表尼康机身或 RAW 实际成像。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-            Section("AI 参考图逆向 · 实验功能") {
-                TextField("HTTPS Base URL（不含 /chat/completions）", text: $aiBaseURL)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
-                TextField("视觉模型名称", text: $aiModel).textInputAutocapitalization(.never).autocorrectionDisabled()
-                SecureField("API Key（保存到本机钥匙串）", text: $keyInput)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                HStack {
-                    Button("保存 Key") { saveAIKey() }
-                    Button("删除此服务 Key", role: .destructive) { deleteAIKey() }
-                }.buttonStyle(.bordered).disabled(aiBusy)
-                TextField("参考图风格要求（可选）", text: $aiHint, axis: .vertical).lineLimit(1...3)
-                Button("生成近似曲线") { confirmAI = true }
-                    .disabled(referenceJPEG == nil || aiBusy)
-                if aiBusy { ProgressView("等待服务商响应…") }
-                Text(aiMessage).font(.footnote).foregroundStyle(.secondary)
-                Text("仅生成全局曲线，不生成真实色彩匹配或机身参数；效果依赖服务商，可能产生费用。Key 仅保存在此设备钥匙串中。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
+            referenceSection
             Section("色调曲线 · 256 LUT") {
-                Canvas { context, size in
-                    var grid = Path()
-                    for i in 0...4 {
-                        let x = size.width * CGFloat(i) / 4, y = size.height * CGFloat(i) / 4
-                        grid.move(to: CGPoint(x: x, y: 0)); grid.addLine(to: CGPoint(x: x, y: size.height))
-                        grid.move(to: CGPoint(x: 0, y: y)); grid.addLine(to: CGPoint(x: size.width, y: y))
-                    }
-                    context.stroke(grid, with: .color(.gray.opacity(0.35)), lineWidth: 0.5)
-                    var path = Path()
-                    let values = curve
-                    for i in values.indices {
-                        let point = CGPoint(x: size.width * CGFloat(i) / 255, y: size.height * (1 - CGFloat(values[i]) / 255))
-                        if i == 0 { path.move(to: point) } else { path.addLine(to: point) }
-                    }
-                    context.stroke(path, with: .color(.yellow), lineWidth: 2)
-                }.frame(height: 180).accessibilityLabel("本地预览曲线")
+                curveChart
                 ForEach(workbench.points.indices, id: \.self) { index in
-                    HStack {
-                        Text("X \(Int(workbench.points[index].x))").font(.caption.monospacedDigit()).frame(width: 55, alignment: .leading)
+                    HStack(spacing: 8) {
+                        Text("X \(Int(workbench.points[index].x))")
+                            .font(.caption.monospacedDigit()).frame(minWidth: 48, alignment: .leading)
+                            .accessibilityHidden(true)
                         Slider(value: Binding(get: { Double(workbench.points[index].y) },
                                               set: { workbench.setPoint(index, y: $0) }), in: 0...255, step: 1)
-                        Text("\(Int(workbench.points[index].y))").font(.caption.monospacedDigit()).frame(width: 30)
-                    }
+                            .accessibilityLabel("输入 \(Int(workbench.points[index].x)) 的曲线控制点")
+                            .accessibilityValue("输出 \(Int(workbench.points[index].y))，范围 0 到 255")
+                        Text("\(Int(workbench.points[index].y))")
+                            .font(.caption.monospacedDigit()).frame(minWidth: 28, alignment: .trailing)
+                            .accessibilityHidden(true)
+                    }.frame(minHeight: 44)
                 }
                 HStack {
                     Button("线性") { workbench.applyLocalPreset(0) }
                     Button("柔和") { workbench.applyLocalPreset(1) }
                     Button("反差") { workbench.applyLocalPreset(2) }
                 }.buttonStyle(.bordered)
-                Text("曲线图使用控制点近似，不一定逐点对应导入的 LUT。示例为本地原创；仅改名称会保留原始 15 位 LUT，修改曲线后按 8 位重建。")
+                Text("曲线图显示当前本地预览 LUT。导入的 LUT 可能无法由少量控制点精确表达；仅改名称保留原始 15 位 LUT，修改曲线后按 8 位重建。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            Section("AI 参考图逆向 · 实验功能") {
+                DisclosureGroup("服务配置", isExpanded: $aiSettingsExpanded) {
+                    TextField("HTTPS Base URL（不含 /chat/completions）", text: $aiBaseURL)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+                        .accessibilityLabel("服务商 HTTPS 基础地址")
+                    TextField("视觉模型名称", text: $aiModel)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    SecureField("API Key（保存到本机钥匙串）", text: $keyInput)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    ViewThatFits(in: .horizontal) {
+                        HStack { aiKeyButtons }
+                        VStack(alignment: .leading) { aiKeyButtons }
+                    }.buttonStyle(.bordered).disabled(aiBusy)
+                }
+                TextField("参考图风格要求（可选）", text: $aiHint, axis: .vertical).lineLimit(1...3)
+                Button("生成近似曲线") { confirmAI = true }
+                    .disabled(referenceJPEG == nil || aiBusy)
+                if aiBusy { ProgressView("等待服务商响应…") }
+                Text(aiMessage).font(.footnote).foregroundStyle(.secondary)
+                Text("仅生成全局曲线，不生成真实色彩匹配或机身参数；效果依赖服务商，可能产生费用。Key 仅保存在此设备钥匙串中。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Section("本地文件") {
@@ -143,7 +130,8 @@ struct RecipeLabScreen: View {
         .onChange(of: selectedPhoto) { _, item in
             referenceGeneration = UUID()
             let generation = referenceGeneration
-            previewTask?.cancel(); referenceJPEG = nil; processedPNG = nil; showOriginal = false
+            previewTask?.cancel(); previewGeneration = UUID(); previewPending = false; previewFailed = false
+            referenceJPEG = nil; processedPNG = nil; showOriginal = false
             guard let item else { return }
             Task {
                 do {
@@ -157,7 +145,11 @@ struct RecipeLabScreen: View {
             }
         }
         .onChange(of: workbench.points) { _, _ in updatePreview() }
-        .onDisappear { previewTask?.cancel(); aiTask?.cancel(); referenceGeneration = UUID() }
+        .onAppear { if referenceJPEG != nil { updatePreview() } }
+        .onDisappear {
+            previewTask?.cancel(); previewGeneration = UUID(); previewPending = false
+            aiTask?.cancel(); referenceGeneration = UUID()
+        }
         .confirmationDialog("向服务商上传参考图？", isPresented: $confirmAI, titleVisibility: .visible) {
             Button("同意上传并生成") { startAI() }
             Button("取消", role: .cancel) {}
@@ -184,6 +176,88 @@ struct RecipeLabScreen: View {
             }
         }
     }
+    private var aiKeyButtons: some View {
+        Group {
+            Button("保存 Key") { saveAIKey() }
+            Button("删除此服务 Key", role: .destructive) { deleteAIKey() }
+        }
+    }
+
+    private var referenceSection: some View {
+        Section("参考图 · 手机本地预览") {
+            VStack(alignment: .leading, spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12).fill(Color.black)
+                    if let data = (showOriginal ? referenceJPEG : processedPNG ?? referenceJPEG),
+                       let image = UIImage(data: data) {
+                        Image(uiImage: image).resizable().scaledToFit()
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                            .accessibilityLabel(showOriginal || processedPNG == nil ? "参考图原图" : "曲线近似效果")
+                    } else {
+                        VStack(spacing: 8) {
+                            Image(systemName: "photo.on.rectangle").font(.title2).accessibilityHidden(true)
+                            Text("选择一张参考图").font(.subheadline)
+                        }.foregroundStyle(.white.opacity(0.85))
+                    }
+                }
+                .aspectRatio(4 / 3, contentMode: .fit)
+                .frame(maxWidth: 520)
+                .frame(maxWidth: .infinity)
+                HStack(spacing: 8) {
+                    if previewPending && !showOriginal { ProgressView().controlSize(.small) }
+                    Text(previewStatus).font(.footnote).foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }.accessibilityElement(children: .combine)
+                ViewThatFits(in: .horizontal) {
+                    HStack { referenceButtons }
+                    VStack(alignment: .leading) { referenceButtons }
+                }.buttonStyle(.bordered).controlSize(.large)
+                Text("本地生成最长边 768 像素的近似预览，不上传或修改原图；系统可能从 iCloud 下载。不代表尼康机身或 RAW 的实际成像。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }.padding(.vertical, 4)
+        }
+    }
+
+    private var previewStatus: String {
+        if referenceJPEG == nil { return "选择后可比较原图与曲线效果" }
+        if showOriginal { return "正在显示原图" }
+        if previewPending { return "正在生成效果，暂时显示原图" }
+        if previewFailed { return "效果生成失败，正在显示原图" }
+        return processedPNG == nil ? "正在显示原图" : "正在显示曲线近似效果"
+    }
+
+    private var referenceButtons: some View {
+        Group {
+            PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                Label(referenceJPEG == nil ? "选择参考图" : "更换参考图", systemImage: "photo.on.rectangle")
+            }
+            Button(showOriginal ? "显示效果" : "显示原图") { showOriginal.toggle() }
+                .disabled(referenceJPEG == nil || (!showOriginal && processedPNG == nil))
+        }
+    }
+
+    private var curveChart: some View {
+        Canvas { context, size in
+            var grid = Path()
+            for i in 0...4 {
+                let x = size.width * CGFloat(i) / 4, y = size.height * CGFloat(i) / 4
+                grid.move(to: CGPoint(x: x, y: 0)); grid.addLine(to: CGPoint(x: x, y: size.height))
+                grid.move(to: CGPoint(x: 0, y: y)); grid.addLine(to: CGPoint(x: size.width, y: y))
+            }
+            context.stroke(grid, with: .color(.white.opacity(0.20)), lineWidth: 0.5)
+            var path = Path()
+            let values = curve
+            for i in values.indices {
+                let point = CGPoint(x: size.width * CGFloat(i) / 255, y: size.height * (1 - CGFloat(values[i]) / 255))
+                if i == 0 { path.move(to: point) } else { path.addLine(to: point) }
+            }
+            context.stroke(path, with: .color(Color(red: 1, green: 0.90, blue: 0)), lineWidth: 2)
+        }
+        .padding(12).frame(height: 204)
+        .background(Color.black, in: RoundedRectangle(cornerRadius: 12))
+        .accessibilityLabel("当前本地预览曲线图，控制点可在下方调整")
+    }
+
     private func saveAIKey() {
         do {
             let base = try AIKeyStore.validatedBase(aiBaseURL)
@@ -213,17 +287,22 @@ struct RecipeLabScreen: View {
                 } catch is CancellationError { aiMessage = "请求已取消，服务商可能已收到数据。" }
                 catch { if !Task.isCancelled { aiMessage = "生成失败或输出未通过校验；草稿未改变。请检查配置、网络和视觉模型。" } }
             }
-        } catch { aiMessage = "请先配置有效 HTTPS Base URL 并保存该地址的 Key。" }
+        } catch { aiMessage = "请展开「服务配置」，填写有效 HTTPS Base URL 并保存该地址的 Key。" }
     }
     private func updatePreview() {
         previewTask?.cancel()
-        guard let jpeg = referenceJPEG, let lut = try? workbench.previewLUT() else { processedPNG = nil; return }
-        let generation = referenceGeneration
+        previewGeneration = UUID()
+        let generation = previewGeneration
+        processedPNG = nil
+        guard let jpeg = referenceJPEG else { previewPending = false; previewFailed = false; return }
+        guard let lut = try? workbench.previewLUT() else { previewPending = false; previewFailed = true; return }
+        previewPending = true; previewFailed = false
         previewTask = Task {
             do { try await Task.sleep(nanoseconds: 250_000_000) } catch { return }
             let output = await Task.detached(priority: .utility) { ReferencePreview.apply(jpeg: jpeg, lut: lut) }.value
-            guard !Task.isCancelled, generation == referenceGeneration else { return }
+            guard !Task.isCancelled, generation == previewGeneration else { return }
             processedPNG = output
+            previewPending = false; previewFailed = output == nil
         }
     }
 }
