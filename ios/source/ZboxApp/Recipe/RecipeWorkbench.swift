@@ -7,6 +7,7 @@ struct LocalRecipe: Codable, Identifiable {
     let payload: Data
     let shareMetadata: ShareRecipe?
     let family: Int?
+    let legacyOriginal: Data?
     let savedAt: Date
 }
 
@@ -40,6 +41,7 @@ final class RecipeWorkbench: ObservableObject {
     private var template = RecipePayload.linearTemplate()
     @Published private(set) var metadata: ShareRecipe?
     @Published private(set) var presetFamily: Int?
+    @Published private(set) var legacyOriginal: Data?
     private let storeURL: URL
 
     init(storeURL: URL? = nil) {
@@ -54,7 +56,12 @@ final class RecipeWorkbench: ObservableObject {
             guard let size = attributes[.size] as? NSNumber, size.intValue <= 1_000_000 else { throw StoreError.invalid }
             let decoded = try JSONDecoder().decode([LocalRecipe].self, from: Data(contentsOf: storeURL))
             guard decoded.count <= 200 else { throw StoreError.invalid }
-            for entry in decoded { _ = try PictureControl614.parse(entry.payload) }
+            for entry in decoded {
+                _ = try PictureControl614.parse(entry.payload)
+                if let original = entry.legacyOriginal {
+                    guard original.count == 84, (try RecipePayload.importFile(original)).approximate else { throw StoreError.invalid }
+                }
+            }
             entries = decoded
         } catch {
             storeHealthy = false
@@ -131,11 +138,11 @@ final class RecipeWorkbench: ObservableObject {
     func snapshot() throws -> Data {
         try RecipePayload.edit15(template: template, name: name.trimmingCharacters(in: .whitespaces), lut: editedLUT15())
     }
-    func adopt(_ payload: Data, metadata: ShareRecipe? = nil, family: Int? = nil, notice: String) throws {
+    func adopt(_ payload: Data, metadata: ShareRecipe? = nil, family: Int? = nil, legacyOriginal: Data? = nil, notice: String) throws {
         let parsed = try PictureControl614.parse(payload)
         template = payload; name = parsed.name
         points = try CurveLUT.sample(RecipePayload.lut8(payload))
-        curveEdited = false; self.metadata = metadata; presetFamily = family; message = notice
+        curveEdited = false; self.metadata = metadata; presetFamily = family; self.legacyOriginal = legacyOriginal; message = notice
     }
     struct DraftIdentity: Equatable {
         let template: Data
@@ -144,10 +151,11 @@ final class RecipeWorkbench: ObservableObject {
         let curveEdited: Bool
         let metadata: ShareRecipe?
         let family: Int?
+        let legacyOriginal: Data?
     }
     func draftIdentity() -> DraftIdentity {
         DraftIdentity(template: template, name: name, points: points, curveEdited: curveEdited,
-                      metadata: metadata, family: presetFamily)
+                      metadata: metadata, family: presetFamily, legacyOriginal: legacyOriginal)
     }
     func useAI(_ result: AIRecipe) throws {
         let payload = try RecipePayload.edit(template: RecipePayload.linearTemplate(), name: result.name,
@@ -173,13 +181,13 @@ final class RecipeWorkbench: ObservableObject {
         var current = metadata
         current?.name = try PictureControl614.parse(payload).name
         current?.points = points
-        return try RecipeArchive.encode(payload: payload, points: points, metadata: current, family: presetFamily)
+        return try RecipeArchive.encode(payload: payload, points: points, metadata: current, family: presetFamily, legacyOriginal: legacyOriginal)
     }
     func importBytes(_ data: Data) {
         do {
             if data.first(where: { ![0x09, 0x0a, 0x0d, 0x20].contains($0) }) == 0x7b {
                 let archive = try RecipeArchive.decode(data)
-                try adopt(archive.payload, metadata: archive.metadata, family: archive.family,
+                try adopt(archive.payload, metadata: archive.metadata, family: archive.family, legacyOriginal: archive.legacyOriginal,
                           notice: "已导入 ZBox 本地配方；载荷和预览参数已恢复，不会写入相机。")
                 points = archive.points
                 return
@@ -194,16 +202,16 @@ final class RecipeWorkbench: ObservableObject {
                                              points: try CurveLUT.sample(RecipePayload.lut8(imported.payload)))
             }
             try adopt(imported.payload, metadata: legacyMetadata, family: imported.legacyFamily,
-                      notice: "已导入：\(imported.description)。" + (imported.approximate ? "这是近似转换，类型不会写入 NCP 或相机。" : "原始 15 位 LUT 保留到编辑曲线为止。"))
+                      legacyOriginal: imported.approximate ? data : nil, notice: "已导入：\(imported.description)。" + (imported.approximate ? "这是近似转换，类型不会写入 NCP 或相机。" : "原始 15 位 LUT 保留到编辑曲线为止。"))
         } catch { message = "导入失败：文件格式不受支持或内容无效；没有修改草稿。" }
     }
     func save() {
         do {
             let data = try snapshot()
             let entry = LocalRecipe(id: UUID(), name: try PictureControl614.parse(data).name,
-                                    payload: data, shareMetadata: metadata, family: presetFamily, savedAt: Date())
+                                    payload: data, shareMetadata: metadata, family: presetFamily, legacyOriginal: legacyOriginal, savedAt: Date())
             try persist([entry] + entries)
-            try adopt(data, metadata: metadata, family: presetFamily, notice: "已保存到手机本地预设库；不会写入相机。")
+            try adopt(data, metadata: metadata, family: presetFamily, legacyOriginal: legacyOriginal, notice: "已保存到手机本地预设库；不会写入相机。")
         } catch { message = "保存失败：请使用 1–19 个 ASCII 字符的名称，并检查本地预设库状态。" }
     }
     func remove(_ entry: LocalRecipe) {
@@ -211,7 +219,7 @@ final class RecipeWorkbench: ObservableObject {
         catch { message = "删除失败；未修改本地预设库。" }
     }
     func use(_ entry: LocalRecipe) {
-        do { try adopt(entry.payload, metadata: entry.shareMetadata, family: entry.family, notice: "已载入本地预设；不会修改相机。") }
+        do { try adopt(entry.payload, metadata: entry.shareMetadata, family: entry.family, legacyOriginal: entry.legacyOriginal, notice: "已载入本地预设；不会修改相机。") }
         catch { message = "预设无效，未替换草稿。" }
     }
     func makeShareCode() {

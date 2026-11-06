@@ -112,8 +112,15 @@ struct RecipeLabScreen: View {
                     do { exportDocument = RecipeDocument(data: try workbench.exportArchive()); exportFilename = "\(workbench.name).zboxrecipe"; exporting = true }
                     catch { workbench.message = "导出失败：请检查名称、曲线和本地参数。" }
                 }
+                if let original = workbench.legacyOriginal {
+                    Button("导出导入时的原始 84B") {
+                        exportDocument = RecipeDocument(data: original); exportFilename = "original-legacy-84b.ncp"; exporting = true
+                    }
+                    Text("原始 84B 按导入时原样保留，不包含之后的编辑，也不是 614B 相机载荷。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
                 Button("保存到本地预设库") { workbench.save() }.disabled(!workbench.storeHealthy)
-                Text("ZBox 配方是本应用格式，保留载荷、控制点和本地预览参数；校验值不代表来源可信。NCP 不含预览参数；旧 84B 是近似转换，导出不代表相机兼容。")
+                Text("ZBox 配方是本应用格式，保留载荷、控制点、本地预览参数及可用的原始 84B；校验值不代表来源可信。NCP 不含预览参数；旧 84B 是近似转换，导出不代表相机兼容。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Section("安卓快传码") {

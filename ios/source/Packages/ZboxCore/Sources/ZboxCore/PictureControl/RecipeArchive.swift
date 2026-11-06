@@ -10,6 +10,8 @@ public enum RecipeArchive {
         public let points: [CurveLUT.Point]
         public let metadata: ShareRecipe?
         public let family: Int?
+        /// Optional original 84-byte file, retained verbatim as provenance, never written to the camera.
+        public let legacyOriginal: Data?
     }
     private struct Body: Codable {
         let format: String
@@ -18,6 +20,7 @@ public enum RecipeArchive {
         let points: [CurveLUT.Point]
         let metadata: ShareRecipe?
         let family: Int?
+        let legacyOriginal: Data?
     }
     private struct Envelope: Codable {
         let body: Body
@@ -34,6 +37,9 @@ public enum RecipeArchive {
         guard body.format == "ZBOX_RECIPE", body.version == 1,
               body.family == nil || [0, 1, 2, 8].contains(body.family!) else { throw Error.invalid }
         let parsed = try PictureControl614.parse(body.payload)
+        if let original = body.legacyOriginal {
+            guard original.count == 84, (try RecipePayload.importFile(original)).approximate else { throw Error.invalid }
+        }
         _ = try CurveLUT.make(body.points)
         if let metadata = body.metadata {
             guard metadata.name == parsed.name, !metadata.profile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -45,8 +51,9 @@ public enum RecipeArchive {
             _ = try CurveLUT.make(metadata.points)
         }
     }
-    public static func encode(payload: Data, points: [CurveLUT.Point], metadata: ShareRecipe?, family: Int?) throws -> Data {
-        let body = Body(format: "ZBOX_RECIPE", version: 1, payload: payload, points: points, metadata: metadata, family: family)
+    public static func encode(payload: Data, points: [CurveLUT.Point], metadata: ShareRecipe?, family: Int?, legacyOriginal: Data? = nil) throws -> Data {
+        let body = Body(format: "ZBOX_RECIPE", version: 1, payload: payload, points: points, metadata: metadata, family: family,
+                        legacyOriginal: legacyOriginal)
         try validate(body)
         let hash = digest(try encoder().encode(body))
         let data = try encoder().encode(Envelope(body: body, sha256: hash))
@@ -59,6 +66,6 @@ public enum RecipeArchive {
         try validate(envelope.body)
         guard envelope.sha256 == digest(try encoder().encode(envelope.body)) else { throw Error.integrity }
         return Contents(payload: envelope.body.payload, points: envelope.body.points,
-                        metadata: envelope.body.metadata, family: envelope.body.family)
+                        metadata: envelope.body.metadata, family: envelope.body.family, legacyOriginal: envelope.body.legacyOriginal)
     }
 }

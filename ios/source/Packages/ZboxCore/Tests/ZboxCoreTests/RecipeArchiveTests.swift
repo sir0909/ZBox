@@ -28,5 +28,6 @@ final class RecipeArchiveTests: XCTestCase {
         XCTAssertThrowsError(try RecipeArchive.encode(payload: payload, points: points, metadata: nil, family: 100))
         let bad = ShareRecipe(name: "WRONG", points: points)
         XCTAssertThrowsError(try RecipeArchive.encode(payload: payload, points: points, metadata: bad, family: nil))
+        XCTAssertThrowsError(try RecipeArchive.encode(payload: payload, points: points, metadata: nil, family: nil, legacyOriginal: Data(repeating: 0, count: 84)))
     }
 }

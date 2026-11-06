@@ -111,17 +111,25 @@ final class RecipeWorkbenchTests: XCTestCase {
         var old = Data(repeating: 0, count: 84)
         old.replaceSubrange(0..<4, with: Data("MONO".utf8)); old[0x18] = 1
         for i in 0..<18 { old[0x1a + i] = UInt8(i * 15) }
+        old[0x30] = 0xb7 // Opaque bytes outside curve A survive independently of conversion.
         workbench.importBytes(old)
+        XCTAssertEqual(workbench.legacyOriginal, old)
         XCTAssertEqual(workbench.presetFamily, 1)
         XCTAssertEqual(workbench.metadata?.profile, "MONOCHROME")
         XCTAssertTrue(try XCTUnwrap(workbench.previewAdjustments()).monochrome)
         XCTAssertEqual(try workbench.snapshot()[0x2c], 5) // fallback template, not the old family byte
         workbench.makeShareCode()
         XCTAssertEqual(try RecipeShareCode.decode(workbench.shareText).profile, "MONOCHROME")
+        workbench.setPoint(2, y: 165)
+        let archived = try workbench.exportArchive()
+        let archiveCopy = RecipeWorkbench(storeURL: temporaryStore())
+        archiveCopy.importBytes(archived)
+        XCTAssertEqual(archiveCopy.legacyOriginal, old)
         workbench.save()
         let reopened = RecipeWorkbench(storeURL: url)
         reopened.use(try XCTUnwrap(reopened.entries.first))
         XCTAssertEqual(reopened.presetFamily, 1)
+        XCTAssertEqual(reopened.legacyOriginal, old)
     }
 
     func testAIColorSuggestionIsPreviewOnlyAndDraftIdentityTracksChanges() throws {
