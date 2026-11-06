@@ -12,6 +12,10 @@ final class PoseArchiveDownload: NSObject, URLSessionDownloadDelegate, @unchecke
     private var tooLarge = false
     private var completed = false
     private var lastReportedMiB: Int64 = -1
+    #if DEBUG
+    /// Test-only local URLProtocol; production uses the system HTTPS transport.
+    var protocolClassForTesting: AnyClass?
+    #endif
     private let report: @Sendable (Int64, Int64) -> Void
     init(report: @escaping @Sendable (Int64, Int64) -> Void) { self.report = report }
 
@@ -22,6 +26,9 @@ final class PoseArchiveDownload: NSObject, URLSessionDownloadDelegate, @unchecke
                 if cancelled { lock.unlock(); continuation.resume(throwing: CancellationError()); return }
                 self.continuation = continuation
                 let config = URLSessionConfiguration.ephemeral
+                #if DEBUG
+                if let protocolClassForTesting { config.protocolClasses = [protocolClassForTesting] }
+                #endif
                 config.urlCache = nil; config.urlCredentialStorage = nil; config.httpCookieStorage = nil
                 config.timeoutIntervalForRequest = 60; config.timeoutIntervalForResource = 1800
                 let session = URLSession(configuration: config, delegate: self, delegateQueue: nil)

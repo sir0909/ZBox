@@ -59,6 +59,7 @@ public struct PoseCatalog: Decodable, Sendable {
     }
     public func filtered(_ filters: [String: String]) -> [Item] {
         guard filters.allSatisfy({ definitions[$0.key]?[$0.value] != nil }) else { return [] }
+        if filters.isEmpty { return items }
         return items.filter { item in
             let chars = Array(item.code).map(String.init)
             return filters.allSatisfy { key, value in

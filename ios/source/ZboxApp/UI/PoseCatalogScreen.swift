@@ -9,10 +9,11 @@ struct PoseCatalogScreen: View {
     @State private var filterExpanded = false
     @State private var selectedName: String?
     @State private var downloadConfirmation = false
-    private var visible: [PoseCatalog.Item] {
-        guard let catalog = library.catalog else { return [] }
+    @State private var visible: [PoseCatalog.Item] = []
+    private func updateVisible() {
+        guard let catalog = library.catalog else { visible = []; return }
         let result = catalog.filtered(filters)
-        return favoritesOnly ? result.filter { library.favorites.contains($0.name) } : result
+        visible = favoritesOnly ? result.filter { library.favorites.contains($0.name) } : result
     }
     private var current: PoseCatalog.Item? { visible.first { $0.name == selectedName } ?? visible.first }
     private var position: Int { current.flatMap { item in visible.firstIndex { $0.name == item.name } } ?? 0 }
@@ -28,6 +29,10 @@ struct PoseCatalogScreen: View {
             }
         }
         .navigationTitle("姿势图库")
+        .onAppear { updateVisible() }
+        .onChange(of: filters) { _, _ in updateVisible() }
+        .onChange(of: favoritesOnly) { _, _ in updateVisible() }
+        .onChange(of: library.favorites) { _, _ in updateVisible() }
         .onDisappear { library.cancel() }
         .confirmationDialog("下载固定版本姿势图库？", isPresented: $downloadConfirmation, titleVisibility: .visible) {
             Button("同意下载并校验") { library.downloadAfterConsent() }
