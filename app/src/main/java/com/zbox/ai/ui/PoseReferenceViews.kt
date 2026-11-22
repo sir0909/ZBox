@@ -48,7 +48,12 @@ import kotlinx.coroutines.withContext
         ((if(state.installed && source!="我的")state.catalog else emptyList())+(if(source!="图库")state.own else emptyList()))
             .filter{(!favorites || repo.key(it) in state.favorites) && (it.own || filters.all{(i,c)->it.code.getOrNull(i)==c})}}
     val index=items.indexOfFirst{repo.key(it)==selected}.coerceAtLeast(0);val current=items.getOrNull(index)
-    val bitmap by produceState<android.graphics.Bitmap?>(null,current){value=null;value=withContext(Dispatchers.IO){current?.let{repo.load(it)}}}
+    val currentKey=current?.let{repo.key(it)}
+    val loadedPose by produceState<Pair<String?, android.graphics.Bitmap?>>(null to null,currentKey){
+        value=currentKey to withContext(Dispatchers.IO){current?.let{repo.load(it)}}
+    }
+    val bitmap=loadedPose.second
+    val poseLoading=currentKey!=null && loadedPose.first!=currentKey
     val labels=listOf("景别","构图","角度","姿态","动作","情绪","服装","发型","颜色","季节","场景","风格")
     val fields=listOf("shot_size","composition","angle","pose","action","emotion","clothing","hair","color","season","scene","style")
     Column((if(embedded)Modifier.fillMaxWidth()else Modifier.fillMaxWidth().fillMaxHeight(.96f)).background(if(glass)androidx.compose.ui.graphics.Color.Transparent else ZColors.SurfaceHigh).padding(if(embedded)8.dp else 12.dp)){
@@ -135,13 +140,22 @@ import kotlinx.coroutines.withContext
                         ZOutlineButton("清空姿势筛选",onClick={filters=emptyMap();selected=""})}
                     if(current!=null){
                         Text("${index+1}/${items.size} · ${if(current.own)"自己的参考图（不按上游标签筛选）"else "Poze离线参考"}",fontSize=10.sp,color=ZColors.TextSecondary)
-                        bitmap?.let{Image(it.asImageBitmap(),"拍照姿势参考图",Modifier.fillMaxWidth().height(290.dp),contentScale=ContentScale.Fit)}?:Text("参考图片暂不可用",color=ZColors.TextSecondary)
-                        if(!current.own)Text(current.code.mapIndexedNotNull{i,c->state.definitions[fields[i]]?.get(c.toString())}.joinToString(" · "),fontSize=10.sp,color=ZColors.TextSecondary)
+                        Box(
+                            Modifier.fillMaxWidth().height(290.dp).background(ZColors.Surface,androidx.compose.foundation.shape.RoundedCornerShape(8.dp)),
+                            contentAlignment=Alignment.Center,
+                        ){
+                            when{
+                                bitmap!=null->Image(bitmap.asImageBitmap(),"拍照姿势参考图",Modifier.fillMaxSize(),contentScale=ContentScale.Fit)
+                                poseLoading->CircularProgressIndicator(color=ZColors.NikonYellow,modifier=Modifier.size(26.dp),strokeWidth=2.5.dp)
+                                else->Text("参考图片暂不可用",color=ZColors.TextSecondary)
+                            }
+                        }
                         Row(Modifier.horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(6.dp)){
                             ZOutlineButton("上一张",onClick={selected=repo.key(items[(index-1+items.size)%items.size])})
                             ZOutlineButton("随机姿势",onClick={selected=repo.key(items.filter{repo.key(it)!=repo.key(current)}.randomOrNull()?:current)})
                             ZOutlineButton("下一张",onClick={selected=repo.key(items[(index+1)%items.size])})
                             ZOutlineButton(if(repo.key(current) in state.favorites)"取消姿势收藏"else "收藏姿势",onClick={repo.favorite(current)})}
+                        if(!current.own)Text(current.code.mapIndexedNotNull{i,c->state.definitions[fields[i]]?.get(c.toString())}.joinToString(" · "),fontSize=10.sp,color=ZColors.TextSecondary,minLines=2,maxLines=2)
                     }else Text(if(state.installed || state.own.isNotEmpty())"当前筛选没有参考图，可清空筛选或添加自己的图片。"else "图库未下载。可先添加自己的参考图，话术无需下载即可使用。",color=ZColors.TextSecondary)
                     if(state.message.isNotBlank())Text(state.message,fontSize=11.sp,color=ZColors.NikonYellow)
                     Text("Poze ©2025 · MIT · 固定版本827ce3e。图库仅在你同意后下载，参考人物照片不表示可商用或获得肖像授权。",fontSize=9.sp,color=ZColors.TextTertiary)

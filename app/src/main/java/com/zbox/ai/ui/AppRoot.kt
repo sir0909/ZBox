@@ -1,5 +1,6 @@
 package com.zbox.ai.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -12,12 +13,15 @@ import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ArrowBack
@@ -25,8 +29,11 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.TextButton
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -62,6 +69,7 @@ import kotlinx.coroutines.launch
 fun AppRoot(
     vm: MainViewModel,
     onPickImage: () -> Unit,
+    onPickEditorPhoto: () -> Unit,
     onPickNcp: () -> Unit,
     onRequestUsbPermission: (android.hardware.usb.UsbDevice) -> Unit,
 ) {
@@ -97,7 +105,11 @@ fun AppRoot(
         }
     }
 
-    ui.startupUpdate?.let { update ->
+    if (ui.showChangelogDialog) {
+        ChangelogDialog(onDismiss = { vm.dismissChangelog() })
+    }
+
+    if (!ui.showChangelogDialog) ui.startupUpdate?.let { update ->
         AlertDialog(
             onDismissRequest = { vm.dismissStartupUpdate() },
             containerColor = ZColors.SurfaceHigh,
@@ -141,18 +153,20 @@ fun AppRoot(
                 TopStatusBar(ui = ui, vm = vm)
                 when (ui.selectedTab) {
                     0 -> LiveMonitorScreen(ui = ui, vm = vm)
-                    1 -> AiLabScreen(
+                    1 -> PhotoEditorScreen(ui = ui, vm = vm, onPickEditorPhoto = onPickEditorPhoto)
+                    2 -> AiLabScreen(
                         ui = ui, vm = vm,
                         onPickImage = onPickImage,
                         onRequestUsbPermission = onRequestUsbPermission,
                     )
-                    2 -> GalleryScreen(ui = ui, vm = vm)
+                    3 -> GalleryScreen(ui = ui, vm = vm)
                     else -> PresetLibraryScreen(ui = ui, vm = vm, onPickNcp = onPickNcp)
                 }
             }
 
             // 设置与调试台都是整屏覆盖层：不占底部 tab，进来后视野反而比 tab 里更大
             if (ui.settingsOpen) {
+                BackHandler { vm.openSettings(false) }
                 // Edge-to-edge 下此覆盖层不会继承主内容的 status-bar inset；为顶部返回条留出安全区，
                 // 防止系统状态栏盖住左上角返回按钮。
                 Box(
@@ -166,6 +180,7 @@ fun AppRoot(
                 }
             }
             if (ui.consoleOpen) {
+                BackHandler { vm.openConsole(false) }
                 Box(modifier = Modifier.fillMaxSize().background(ZColors.Bg)) {
                     Column(
                         modifier = Modifier
@@ -243,12 +258,12 @@ private fun TopStatusBar(ui: UiState, vm: MainViewModel) {
             modifier = Modifier
                 .size(32.dp)
                 .clip(RoundedCornerShape(6.dp))
-                .background(ZColors.NikonYellow),
+                .background(ZColors.ButtonBg),
             contentAlignment = Alignment.Center,
         ) {
             Text(
                 "Z",
-                color = Color(0xFF121212),
+                color = ZColors.ButtonFg,
                 fontWeight = FontWeight.Black,
                 fontSize = 19.sp,
             )
@@ -350,7 +365,8 @@ private data class TabSpec(val title: String, val icon: ImageVector)
 private fun BottomBar(selected: Int, onSelect: (Int) -> Unit) {
     val tabs = listOf(
         TabSpec("监看", Icons.Filled.Videocam),
-        TabSpec("AI 调色", Icons.Filled.AutoAwesome),
+        TabSpec("修图", Icons.Filled.Tune),
+        TabSpec("逆向配方", Icons.Filled.AutoAwesome),
         TabSpec("相册", Icons.Filled.PhotoLibrary),
         TabSpec("预设库", Icons.Filled.Folder),
     )
@@ -374,15 +390,85 @@ private fun BottomBar(selected: Int, onSelect: (Int) -> Unit) {
                     )
                 },
                 colors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = Color(0xFF121212),
+                    selectedIconColor = ZColors.NavSelectedIcon,
                     selectedTextColor = ZColors.NikonYellow,
                     unselectedIconColor = ZColors.TextTertiary,
                     unselectedTextColor = ZColors.TextTertiary,
-                    indicatorColor = ZColors.NikonYellow,
+                    indicatorColor = ZColors.NavIndicator,
                 ),
             )
         }
     }
+}
+
+@Composable
+private fun ChangelogDialog(onDismiss: () -> Unit) {
+    val items = listOf(
+        "全场景离线智能构图 + 全屏构图" to "监看页与全屏模式新增「构图」按钮，点击立即生效；可在「设置 → 构图模式」切换「本地智能构图」（人像眼线锚点 + 离线通用物体检测 + Achanta Lab 边界抑制显著性 + 地平线三分与实时水平仪，0 流量）或「AI Agent 构图」。",
+        "60fps / 30fps 实时取景帧率升级" to "取景帧率调整为「流畅 · 60fps」「标准 · 30fps」「省电 · 2fps」，结合整帧预算调度带来更顺滑的监看与跟焦体验。",
+        "新增「修图」工作台与离线智能蒙版" to "Lightroom 风格非破坏性本地调色（曝光/影调/白平衡/8 色相 HSL/曲线/裁切），支持离线 AI 选区（人物/天空/主体/背景）与径向/线性/画笔/亮度局部蒙版，拖动时才临时预览红膜且一键导出至 Pictures/Zbox。",
+        "全链路联动与双主题精修" to "支持从「相册」或「逆向配方」送入「修图」精修，调色滑杆支持点击输入精确数值与双击归零，并全面适配浅色 Material 3 Mono 与尼康暗黑主题。",
+    )
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = ZColors.SurfaceHigh,
+        title = {
+            Column {
+                Text(
+                    "ZBOX 更新说明",
+                    color = ZColors.TextPrimary,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 17.sp,
+                )
+                Spacer(Modifier.height(4.dp))
+                Chip("v${com.zbox.ai.BuildConfig.VERSION_NAME} · 全场景构图与 60fps 监看升级")
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 360.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                items.forEachIndexed { index, (title, desc) ->
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(ZColors.Surface)
+                            .padding(10.dp),
+                    ) {
+                        Text(
+                            "${index + 1}. $title",
+                            color = ZColors.NikonYellow,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Spacer(Modifier.height(3.dp))
+                        Text(
+                            desc,
+                            color = ZColors.TextSecondary,
+                            fontSize = 11.sp,
+                            lineHeight = 16.sp,
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = ZColors.ButtonBg,
+                    contentColor = ZColors.ButtonFg,
+                ),
+            ) {
+                Text("开始使用", fontWeight = FontWeight.Bold)
+            }
+        },
+    )
 }
 
 /** Nikon 黄色主按钮。 */
@@ -400,16 +486,16 @@ fun ZPrimaryButton(
         enabled = enabled && !loading,
         shape = RoundedCornerShape(10.dp),
         colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-            containerColor = ZColors.NikonYellow,
-            contentColor = Color(0xFF121212),
-            disabledContainerColor = Color(0xFF3A3A3A),
+            containerColor = ZColors.ButtonBg,
+            contentColor = ZColors.ButtonFg,
+            disabledContainerColor = ZColors.SurfaceHigher,
             disabledContentColor = ZColors.TextTertiary,
         ),
     ) {
         if (loading) {
             androidx.compose.material3.CircularProgressIndicator(
                 modifier = Modifier.size(18.dp),
-                color = Color(0xFF121212),
+                color = ZColors.ButtonFg,
                 strokeWidth = 2.dp,
             )
             Spacer(Modifier.width(8.dp))

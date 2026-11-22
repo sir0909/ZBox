@@ -20,10 +20,10 @@ internal fun MonitorActionButton(text:String,onClick:()->Unit,modifier:Modifier=
     enabled:Boolean=true,selected:Boolean=false) {
     OutlinedButton(onClick=onClick,enabled=enabled,modifier=modifier.height(44.dp),
         shape=RoundedCornerShape(10.dp),contentPadding=PaddingValues(horizontal=4.dp,vertical=0.dp),
-        border=BorderStroke(1.dp,if(enabled && selected) ZColors.NikonYellow else ZColors.Outline),
+        border=BorderStroke(1.dp,if(enabled && selected) ZColors.ButtonBorder else ZColors.Outline),
         colors=ButtonDefaults.outlinedButtonColors(
-            containerColor=if(selected) ZColors.NikonYellow else ZColors.Surface,
-            contentColor=if(selected) Color(0xFF121212) else ZColors.TextPrimary,
-            disabledContainerColor=Color(0xFF202020),disabledContentColor=ZColors.TextTertiary),
+            containerColor=if(selected) ZColors.ButtonBg else ZColors.Surface,
+            contentColor=if(selected) ZColors.ButtonFg else ZColors.TextPrimary,
+            disabledContainerColor=ZColors.SurfaceHigh,disabledContentColor=ZColors.TextTertiary),
     ) { Text(text,fontSize=12.sp,fontWeight=FontWeight.Medium,maxLines=1) }
 }

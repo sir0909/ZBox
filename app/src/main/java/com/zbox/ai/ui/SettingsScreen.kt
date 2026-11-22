@@ -103,6 +103,16 @@ fun SettingsScreen(ui: UiState, vm: MainViewModel) {
             SectionTitle("日常使用")
             PhoneAssistSettings(vm)
 
+            val activeCompMode = com.zbox.ai.core.CompositionMode.entries.firstOrNull { it.name == s.compositionMode }
+                ?: com.zbox.ai.core.CompositionMode.LOCAL
+            ChoiceRow(
+                label = "构图模式",
+                hint = "控制监看页「构图」按钮的行为。本地智能构图：离线实时识别人像/物体/地平线与水平仪（0 流量）；AI Agent 构图：点击即发送当前帧到 AI 供应商分析。",
+                options = com.zbox.ai.core.CompositionMode.entries.map { it to it.label },
+                selected = activeCompMode,
+                onSelect = { vm.setCompositionMode(it) },
+            )
+
             ChoiceRow(
                 label = "相册每批显示张数",
                 hint = "不再限制只能看最近 N 张。向下滚动继续加载，缩略图按可见范围逐张读取；建议 18 或 50 张。",
@@ -229,6 +239,11 @@ fun SettingsScreen(ui: UiState, vm: MainViewModel) {
 
             // ---------- 关于 ----------
             SectionTitle("关于")
+            NavRow(
+                label = "查看本版更新说明",
+                hint = "回顾 v${com.zbox.ai.BuildConfig.VERSION_NAME} 全场景构图、60fps 监看与「修图」工作台更新说明。",
+                onClick = { vm.openChangelog() },
+            )
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -270,12 +285,12 @@ fun SettingsScreen(ui: UiState, vm: MainViewModel) {
 
 /** 单行多选一（横向 chip）。 */
 @Composable
-private fun ChoiceRow(
+private fun <T> ChoiceRow(
     label: String,
     hint: String,
-    options: List<Pair<Int, String>>,
-    selected: Int,
-    onSelect: (Int) -> Unit,
+    options: List<Pair<T, String>>,
+    selected: T,
+    onSelect: (T) -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp).clip(RoundedCornerShape(10.dp)).background(ZColors.Surface).border(1.dp, ZColors.Outline, RoundedCornerShape(10.dp)).padding(horizontal = 12.dp, vertical = 10.dp)) {
         Text(label, color = ZColors.TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
@@ -286,13 +301,13 @@ private fun ChoiceRow(
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
-                        .background(if (on) ZColors.NikonYellow else ZColors.SurfaceHigh)
+                        .background(if (on) ZColors.ButtonBg else ZColors.SurfaceHigh)
                         .clickable { onSelect(value) }
                         .padding(horizontal = 10.dp, vertical = 7.dp),
                 ) {
                     Text(
                         text,
-                        color = if (on) Color(0xFF121212) else ZColors.TextSecondary,
+                        color = if (on) ZColors.ButtonFg else ZColors.TextSecondary,
                         fontSize = 11.sp,
                         fontWeight = if (on) FontWeight.Bold else FontWeight.Normal,
                     )
@@ -323,13 +338,13 @@ private fun SlotChoiceRow(selected: Int, onSelect: (Int) -> Unit) {
                                 .weight(1f)
                                 .height(34.dp)
                                 .clip(RoundedCornerShape(7.dp))
-                                .background(if (on) ZColors.NikonYellow else ZColors.SurfaceHigh)
+                                .background(if (on) ZColors.ButtonBg else ZColors.SurfaceHigh)
                                 .clickable { onSelect(i) },
                             contentAlignment = Alignment.Center,
                         ) {
                             Text(
                                 "C-$i",
-                                color = if (on) Color(0xFF121212) else ZColors.TextSecondary,
+                                color = if (on) ZColors.ButtonFg else ZColors.TextSecondary,
                                 fontSize = 11.sp,
                                 fontWeight = if (on) FontWeight.Bold else FontWeight.Normal,
                                 fontFamily = FontFamily.Monospace,
@@ -372,8 +387,8 @@ private fun ToggleRow(
             checked = checked,
             onCheckedChange = onChange,
             colors = SwitchDefaults.colors(
-                checkedThumbColor = Color(0xFF121212),
-                checkedTrackColor = ZColors.NikonYellow,
+                checkedThumbColor = ZColors.ButtonFg,
+                checkedTrackColor = ZColors.ButtonBg,
                 uncheckedThumbColor = ZColors.TextTertiary,
                 uncheckedTrackColor = ZColors.SurfaceHigher,
                 uncheckedBorderColor = ZColors.Outline,

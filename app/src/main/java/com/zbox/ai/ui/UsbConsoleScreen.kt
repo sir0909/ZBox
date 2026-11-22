@@ -195,7 +195,7 @@ fun UsbConsoleScreen(
                     .fillMaxWidth()
                     .weight(1f)
                     .clip(RoundedCornerShape(8.dp))
-                    .background(Color(0xFF0B0B0B))
+                    .background(ZColors.SurfaceHigh)
                     .border(1.dp, ZColors.Outline, RoundedCornerShape(8.dp))
                     .padding(6.dp),
                 verticalArrangement = Arrangement.spacedBy(3.dp),
@@ -245,7 +245,7 @@ private fun LiveViewCard(ui: UiState, vm: MainViewModel) {
                 .fillMaxWidth()
                 .height(190.dp)
                 .clip(RoundedCornerShape(7.dp))
-                .background(Color(0xFF0B0B0B)),
+                .background(ZColors.SurfaceHigh),
             contentAlignment = Alignment.Center,
         ) {
             if (frame != null) {
@@ -548,8 +548,8 @@ private fun HexLogRow(entry: HexLogEntry) {
     val color = when (entry.direction) {
         HexLogEntry.Direction.TX -> ZColors.NikonYellow
         HexLogEntry.Direction.RX -> ZColors.Info
-        HexLogEntry.Direction.EVENT -> Color(0xFFC084FC)
-        HexLogEntry.Direction.WARN -> Color(0xFFFB923C)
+        HexLogEntry.Direction.EVENT -> if (ZColors.isLightTheme) Color(0xFF7C3AED) else Color(0xFFC084FC)
+        HexLogEntry.Direction.WARN -> if (ZColors.isLightTheme) Color(0xFFC2410C) else Color(0xFFFB923C)
         HexLogEntry.Direction.ERROR -> ZColors.Danger
         HexLogEntry.Direction.INFO -> ZColors.TextSecondary
     }
@@ -566,7 +566,7 @@ private fun HexLogRow(entry: HexLogEntry) {
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(5.dp))
-            .background(if (entry.direction == HexLogEntry.Direction.RX) Color(0xFF0E1216) else Color(0xFF101010))
+            .background(if (entry.direction == HexLogEntry.Direction.RX) ZColors.Surface else ZColors.Bg)
             .padding(horizontal = 6.dp, vertical = 4.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -597,7 +597,7 @@ private fun HexLogRow(entry: HexLogEntry) {
         if (entry.bytes.isNotEmpty()) {
             Text(
                 entry.hexDump(),
-                color = Color(0xFF8FA8B8), fontSize = 8.5.sp, fontFamily = FontFamily.Monospace,
+                color = ZColors.TextSecondary, fontSize = 8.5.sp, fontFamily = FontFamily.Monospace,
                 lineHeight = 12.sp,
             )
         }

@@ -1,9 +1,11 @@
 # 功能模块索引
 
 - 相机通信：`ptp`（USB/PTP）、`ptpip`（网络 PTP/IP）。
+- 监看与构图：`ui/LiveMonitorScreen` + `ui/FullscreenViewer`（竖屏与全屏模式均提供「构图」按钮，点击立即按当前设定模式生效）+ `CompositionPanel` + `LocalCompositionEngine`；取景帧率支持 **60fps / 30fps / 2fps**，构图模式统一在「设置 → 构图模式」中切换并持久化，支持「本地智能构图」（默认：ML Kit 人像分割眼线锚点 + ML Kit 离线通用物体检测 + Achanta Lab 边界抑制显著性 20×14 聚类 + 地平线三分/实时水平仪 + 规则优先级冲突消解）与「AI Agent 构图」（点击即发送单帧给 AI 供应商分析）。
+- 本地修图：`editor`（Lightroom 风格非破坏性参数调色、8 色相 HSL、样条曲线、局部蒙版含离线智能选区人物/天空/主体/背景及径向/线性/画笔/亮度蒙版、裁剪旋转与相册导出），与相机「相册」和「逆向配方」联动。
 - AI：`ai`；配方/图像领域逻辑：`core`；供应商配置和页面状态由相应数据/UI 层协作。
-- 设置与版本更新：`data`（更新源：`sir0909/ZBox`）。
-- 页面：`ui`（Jetpack Compose）。
+- 设置与版本更新：`data`（更新源：`sir0909/ZBox`，支持首次启动更新说明弹窗状态持久化）。
+- 页面与交互组件：`ui`（Jetpack Compose，含深/浅色模式自适应、拍照姿势/引导话术库、全屏取景、`EditableSliderRow` 滑杆精准输入与双击归零）。
 - 通用图像工具：`util`。
 
 内置预设分类：人像、电影、胶片、日系、黑白、风光、街拍、暗调、美食、夜景。

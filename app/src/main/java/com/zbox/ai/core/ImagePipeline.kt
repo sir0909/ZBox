@@ -18,7 +18,9 @@ object ImagePipeline {
      * @param contrast   -3..3  → 映射成 gamma 式亮度压缩/拉伸
      * @param brightness -2..2  → 线性偏移
      * @param saturation -3..3  → 饱和度系数
-     * @param warm       预览用色温（由 hue 推导）
+     * @param hue        -3..3  → YIQ 微旋转
+     * @param sharpening -3..9  → 亮度反锐化掩模（负值轻微柔化）
+     * @param clarity    -5..5  → 中间调局部反差
      */
     fun render(
         src: Bitmap,
@@ -27,6 +29,8 @@ object ImagePipeline {
         brightness: Float = 0f,
         saturation: Float = 0f,
         hue: Float = 0f,
+        sharpening: Float = 0f,
+        clarity: Float = 0f,
     ): Bitmap {
         val w = src.width
         val h = src.height
@@ -94,7 +98,57 @@ object ImagePipeline {
                 b.coerceIn(0, 255)
         }
 
+        if ((kotlin.math.abs(clarity) > 0.05f || kotlin.math.abs(sharpening) > 0.05f) && w >= 3 && h >= 3) {
+            applyDetailPass(pixels, w, h, sharpening, clarity)
+        }
+
         return Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888)
+    }
+
+    /** 快速可分离 3x3 亮度模糊，叠加 Clarity（中间调局部对比）与 Sharpening（边缘反锐化）。 */
+    private fun applyDetailPass(pixels: IntArray, w: Int, h: Int, sharpening: Float, clarity: Float) {
+        val n = w * h
+        val luma = FloatArray(n)
+        for (i in 0 until n) {
+            val c = pixels[i]
+            luma[i] = 0.2126f * ((c ushr 16) and 0xFF) +
+                0.7152f * ((c ushr 8) and 0xFF) +
+                0.0722f * (c and 0xFF)
+        }
+        val tmp = FloatArray(n)
+        val blur = FloatArray(n)
+        for (y in 0 until h) {
+            val row = y * w
+            for (x in 0 until w) {
+                val l = luma[row + (x - 1).coerceAtLeast(0)]
+                val c = luma[row + x]
+                val r = luma[row + (x + 1).coerceAtMost(w - 1)]
+                tmp[row + x] = (l + 2f * c + r) * 0.25f
+            }
+        }
+        for (y in 0 until h) {
+            val y0 = (y - 1).coerceAtLeast(0) * w
+            val y1 = y * w
+            val y2 = (y + 1).coerceAtMost(h - 1) * w
+            for (x in 0 until w) {
+                blur[y1 + x] = (tmp[y0 + x] + 2f * tmp[y1 + x] + tmp[y2 + x]) * 0.25f
+            }
+        }
+        val sharpGain = sharpening * 0.16f
+        val clarityGain = clarity * 0.24f
+        for (i in 0 until n) {
+            val l = luma[i]
+            val detail = l - blur[i]
+            val midWeight = (4f * (l / 255f) * (1f - l / 255f)).coerceIn(0f, 1f)
+            val sharpDelta = if (kotlin.math.abs(detail) > 2.5f) detail * sharpGain else detail * (sharpGain * 0.35f)
+            val delta = sharpDelta + detail * clarityGain * midWeight
+            if (kotlin.math.abs(delta) < 0.2f) continue
+            val c = pixels[i]
+            val r = (((c ushr 16) and 0xFF) + delta).toInt().coerceIn(0, 255)
+            val g = (((c ushr 8) and 0xFF) + delta).toInt().coerceIn(0, 255)
+            val b = ((c and 0xFF) + delta).toInt().coerceIn(0, 255)
+            pixels[i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+        }
     }
 
     /** 生成一张内置测试样张（渐变 + 灰阶块 + 肤色块），离线也能演示预览效果。 */

@@ -179,10 +179,10 @@ private fun CategoryChip(label: String, selected: Boolean, onClick: () -> Unit) 
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(14.dp))
-            .background(if (selected) ZColors.NikonYellow else ZColors.SurfaceHigh)
+            .background(if (selected) ZColors.ButtonBg else ZColors.SurfaceHigh)
             .border(
                 1.dp,
-                if (selected) ZColors.NikonYellow else ZColors.Outline,
+                if (selected) ZColors.ButtonBorder else ZColors.Outline,
                 RoundedCornerShape(14.dp),
             )
             .clickable { onClick() }
@@ -190,7 +190,7 @@ private fun CategoryChip(label: String, selected: Boolean, onClick: () -> Unit) 
     ) {
         Text(
             label,
-            color = if (selected) Color(0xFF121212) else ZColors.TextSecondary,
+            color = if (selected) ZColors.ButtonFg else ZColors.TextSecondary,
             fontSize = 10.sp,
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
             fontFamily = FontFamily.Monospace,

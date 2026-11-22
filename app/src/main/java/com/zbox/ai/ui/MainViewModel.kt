@@ -73,6 +73,9 @@ data class UiState(
     val startupUpdate: com.zbox.ai.core.ReleaseUpdate? = null,
     val updateChecking: Boolean = false,
     val compositionOpen: Boolean = false,
+    val compositionMode: com.zbox.ai.core.CompositionMode = com.zbox.ai.core.CompositionMode.LOCAL,
+    val localCompStyle: com.zbox.ai.core.LocalCompStyle = com.zbox.ai.core.LocalCompStyle.AUTO,
+    val localCompGuide: com.zbox.ai.core.LocalCompositionGuide? = null,
     val compositionBusy: Boolean = false,
     val compositionSnapshot: Bitmap? = null,
     val compositionAdvice: com.zbox.ai.core.CompositionAdvice? = null,
@@ -227,6 +230,8 @@ data class UiState(
     val consoleOpen: Boolean = false,
     /** 设置页是否以覆盖层打开（入口：右上角齿轮）。 */
     val settingsOpen: Boolean = false,
+    /** 当前版本更新说明弹窗是否显示（首次打开自动弹出一次，也可在设置里重新打开）。 */
+    val showChangelogDialog: Boolean = false,
 ) {
     val activeAccount: ProviderAccount
         get() = accounts.firstOrNull { it.providerId == activeProviderId }
@@ -250,6 +255,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _ui = MutableStateFlow(UiState())
     val ui: StateFlow<UiState> = _ui.asStateFlow()
     internal val poses=PoseRepository(getApplication(),viewModelScope)
+    internal val editor = com.zbox.ai.editor.PhotoEditorController(app, viewModelScope, store) { msg ->
+        _ui.update { it.copy(toast = msg) }
+    }
     internal val phone=PhoneWorkbench(app=getApplication(),scope=viewModelScope,driver=driver,ui={_ui.value},update={f->_ui.update(f)},workPending={pendingExposure.isNotEmpty() || exposureWriteJob!=null || galleryLoadJob?.isActive==true || previewJob?.isActive==true})
 
     val hexLog: StateFlow<List<HexLogEntry>> = HexLog.entries
@@ -310,6 +318,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun dismissStartupUpdate() { _ui.update { it.copy(startupUpdate = null) } }
+
+    private val currentChangelogId = "${com.zbox.ai.BuildConfig.VERSION_NAME}-r1"
+
+    fun openChangelog() { _ui.update { it.copy(showChangelogDialog = true) } }
+
+    fun dismissChangelog() {
+        _ui.update { it.copy(showChangelogDialog = false) }
+        viewModelScope.launch { store.markChangelogSeen(currentChangelogId) }
+    }
 
     /** Explicit About-page check. It only offers the existing confirmation dialog; it never installs. */
     fun checkForUpdatesManually() {
@@ -433,8 +450,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch {
             store.settings.collect { s ->
+                val resolvedMode = com.zbox.ai.core.CompositionMode.entries.firstOrNull { it.name == s.compositionMode }
+                    ?: com.zbox.ai.core.CompositionMode.LOCAL
                 // galleryLimit 在 UiState 里也留一份，GalleryScreen 直接读它，避免改一堆调用点
-                _ui.value = _ui.value.copy(settings = s, galleryLimit = s.galleryLimit)
+                _ui.value = _ui.value.copy(
+                    settings = s,
+                    galleryLimit = s.galleryLimit,
+                    compositionMode = resolvedMode,
+                )
                 // 默认目标槽位只在第一次拿到设置时应用一次，
                 // 之后用户在界面上临时改的槽位不能被设置流覆盖回去
                 if (!defaultSlotApplied) {
@@ -447,6 +470,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 HexLog.hexDumpEnabled = s.hexInLog
                 HexLog.fileLoggingEnabled = s.logToFile
                 if (!s.logToFile) HexLog.stopFileLogging() else HexLog.startFileLogging(getApplication())
+            }
+        }
+        viewModelScope.launch {
+            val seen = store.seenChangelogVersion.first()
+            if (seen != currentChangelogId) {
+                _ui.update { it.copy(showChangelogDialog = true) }
             }
         }
         // 首次进入：没有参考图就用内置样张，保证预览区立刻有东西
@@ -464,7 +493,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (i != 0) stopNativeBurst(resumeLiveView = false)
         _ui.value = _ui.value.copy(selectedTab = i)
         // 进相册页：还没读过、或者刚拍过新照片 → 拉一次，省掉用户多点一下
-        if (i == 2 && driver.isOpen && !_ui.value.galleryLoading) {
+        if (i == 3 && driver.isOpen && !_ui.value.galleryLoading) {
             if (_ui.value.galleryItems.isEmpty() || lastCaptureDirty) {
                 refreshGallery()
             }
@@ -1255,7 +1284,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     val verify = driver.getPicCtrlData(ptpSlot)
                     val v = verify.getOrNull()
                     okName = v != null && com.zbox.ai.core.PcPayload614.readName(v) ==
-                        NcpParserAndBuilder.encodeName(_ui.value.recipe.name).toString(Charsets.US_ASCII)
+                        NcpParserAndBuilder.encodeName(_ui.value.recipe.name).toString(Charsets.US_ASCII).trimEnd('\u0000')
                 } else {
                     okName = true
                 }
@@ -1424,7 +1453,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             name = name ?: r.name,
         )
         _ui.value = _ui.value.copy(recipe = nr)
-        if (contrast != null || brightness != null || saturation != null || hue != null) {
+        if (sharpening != null || clarity != null || contrast != null || brightness != null || saturation != null || hue != null) {
             renderPreview()
         }
     }
@@ -1445,23 +1474,100 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     brightness = r.brightness,
                     saturation = r.saturation,
                     hue = r.hue,
+                    sharpening = r.sharpening,
+                    clarity = r.clarity,
                 )
             }
             _ui.value = _ui.value.copy(previewBitmap = bmp)
         }
     }
 
+    fun openEditorPhoto(uri: Uri) {
+        editor.openFromUri(uri)
+        _ui.update { it.copy(selectedTab = 1) }
+    }
+
+    fun sendAiReferenceToEditor() {
+        val st = _ui.value
+        val ref = st.referenceBitmap
+        if (ref == null) {
+            _ui.update { it.copy(toast = "请先选择参考图") }
+            return
+        }
+        val initialParams = com.zbox.ai.editor.LrPresetCodec.fromRecipe(st.recipe, st.recipe.name)
+        editor.openFromBytesOrBitmap(
+            name = st.recipe.name.ifBlank { "ZBOX_AI" },
+            rawBytes = null,
+            fallbackBitmap = ref,
+            initialParams = initialParams,
+        )
+        _ui.update { it.copy(selectedTab = 1) }
+    }
+
+    fun openGalleryItemInEditor(item: CameraStorage.Item) {
+        if (item.isVideo) return
+        if (phone.cameraBusy || !driver.isOpen) {
+            _ui.update { it.copy(toast = "相机未连接或正忙，请稍候再试") }
+            return
+        }
+        viewModelScope.launch {
+            _ui.update { it.copy(toast = "正在读取 ${item.filename} 进入修图…") }
+            val bytes = driver.getObject(item.handle, timeoutMs = 300_000).getOrNull()
+            if (bytes == null) {
+                _ui.update { it.copy(toast = "读取照片失败，请重试") }
+                return@launch
+            }
+            val fallback = withContext(Dispatchers.Default) { decodeJpegPreview(bytes) }
+            editor.openFromBytesOrBitmap(item.baseName, bytes, fallback)
+            _ui.update { it.copy(selectedTab = 1) }
+        }
+    }
+
     // ---------------- Manual composition: only analyzeComposition() can issue a request. ----------------
     fun openComposition() {
-        _ui.update { it.copy(compositionOpen = true) }
+        com.zbox.ai.ai.LocalCompositionEngine.resetSmoothing()
+        _ui.update { it.copy(compositionOpen = true, localCompGuide = null, compositionError = "") }
+        if (_ui.value.compositionMode == com.zbox.ai.core.CompositionMode.AGENT && !_ui.value.compositionBusy) {
+            analyzeComposition()
+        }
+    }
+
+    fun setCompositionMode(mode: com.zbox.ai.core.CompositionMode) {
+        editSettings { it.copy(compositionMode = mode.name) }
+        if (mode == com.zbox.ai.core.CompositionMode.LOCAL) {
+            compositionEpoch++
+            compositionJob?.cancel()
+            compositionJob = null
+            com.zbox.ai.ai.LocalCompositionEngine.resetSmoothing()
+            _ui.update {
+                it.copy(
+                    compositionMode = mode,
+                    compositionBusy = false,
+                    compositionError = "",
+                    localCompGuide = null,
+                )
+            }
+        } else {
+            _ui.update { it.copy(compositionMode = mode, localCompGuide = null, compositionError = "") }
+        }
+    }
+
+    fun setLocalCompStyle(style: com.zbox.ai.core.LocalCompStyle) {
+        _ui.update { it.copy(localCompStyle = style) }
+    }
+
+    fun updateLocalComposition(guide: com.zbox.ai.core.LocalCompositionGuide?) {
+        _ui.update { it.copy(localCompGuide = guide) }
     }
 
     fun clearComposition(close: Boolean = false) {
         compositionEpoch++
         compositionJob?.cancel()
         compositionJob = null
+        com.zbox.ai.ai.LocalCompositionEngine.resetSmoothing()
         _ui.update { it.copy(compositionOpen = if (close) false else it.compositionOpen,
-            compositionBusy = false, compositionSnapshot = null, compositionAdvice = null, compositionError = "") }
+            compositionBusy = false, compositionSnapshot = null, compositionAdvice = null, compositionError = "",
+            localCompGuide = null) }
     }
 
     fun analyzeComposition() {
@@ -2723,7 +2829,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun refreshGalleryAfterCaptureIfVisible() {
-        if (_ui.value.selectedTab == 2 && driver.isOpen && !_ui.value.galleryLoading) {
+        if (_ui.value.selectedTab == 3 && driver.isOpen && !_ui.value.galleryLoading) {
             _ui.value = _ui.value.copy(capturing = false)
             refreshGallery()
         }
@@ -2927,8 +3033,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             _ui.value = _ui.value.copy(
                 referenceBitmap = bmp,
                 features = feats,
-                selectedTab = 0,
-                toast = "已设为参考图，去「AI 炼丹炉」还原影调",
+                selectedTab = 2,
+                toast = "已设为参考图，去「逆向配方」还原影调",
             )
             renderPreview()
         }
@@ -3016,7 +3122,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Only demand visible cells plus a small look-ahead; scrolling replaces queued work. */
     fun requestGalleryThumbnails(handles: List<Long>) {
-        if (_ui.value.selectedTab != 2 || !driver.isOpen) return
+        if (_ui.value.selectedTab != 3 || !driver.isOpen) return
         val wanted = handles.toSet()
         loadThumbnails(_ui.value.galleryItems.filter { it.handle in wanted })
     }

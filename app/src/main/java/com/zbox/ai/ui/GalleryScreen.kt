@@ -133,13 +133,13 @@ fun GalleryScreen(ui: UiState, vm: MainViewModel) {
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(6.dp))
-                        .background(if (sel) ZColors.NikonYellow else ZColors.SurfaceHigh)
+                        .background(if (sel) ZColors.ButtonBg else ZColors.SurfaceHigh)
                         .padding(horizontal = 6.dp, vertical = 8.dp)
                         .pointerInputTap { selectionMode=false;bulkHandles=emptySet();vm.setGalleryFilter(if(ui.galleryFilter==f)1 else f) },
                 ) {
                     Text(
                         label,
-                        color = if (sel) Color(0xFF121212) else ZColors.TextSecondary,
+                        color = if (sel) ZColors.ButtonFg else ZColors.TextSecondary,
                         fontSize = 11.sp,
                         fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal,
                     )
@@ -353,6 +353,14 @@ private fun ItemSheet(
                     onClick = { vm.loadGalleryPreview(item) },
                     enabled = !ui.galleryPreviewBusy,
                 )
+                if (!item.isVideo) {
+                    Spacer(Modifier.height(6.dp))
+                    ZOutlineButton(
+                        text = "送入「修图」调色并保存手机",
+                        onClick = { vm.openGalleryItemInEditor(item); onDismiss() },
+                        enabled = ui.isConnected && !ui.galleryPreviewBusy,
+                    )
+                }
                 if (ui.downloadingHandle == item.handle) {
                     Spacer(Modifier.height(8.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {

@@ -10,6 +10,8 @@ import com.zbox.ai.ai.LlmProvider
 import com.zbox.ai.ai.ProviderAccount
 import com.zbox.ai.core.CubicSplineLut
 import com.zbox.ai.core.Recipe
+import com.zbox.ai.editor.LrPresetCodec
+import com.zbox.ai.editor.SavedLrPreset
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -134,8 +136,10 @@ class SettingsStore(private val context: Context) {
 
     private val keyAccounts = stringPreferencesKey("accounts_json")
     private val keyPresets = stringPreferencesKey("presets_json")
+    private val keyLrPresets = stringPreferencesKey("lr_presets_json")
     private val keyActiveProvider = stringPreferencesKey("active_provider")
     private val keySettings = stringPreferencesKey("app_settings")
+    private val keySeenChangelogVersion = stringPreferencesKey("seen_changelog_version")
 
     /** 所有供应商账户（含 key 与用量）。默认填入三个内置供应商的空账户。 */
     val accounts: Flow<List<ProviderAccount>> = context.dataStore.data.map { prefs ->
@@ -157,10 +161,23 @@ class SettingsStore(private val context: Context) {
         if (raw.isNullOrBlank()) emptyList() else parsePresets(raw)
     }
 
+    val lrPresets: Flow<List<SavedLrPreset>> = context.dataStore.data.map { prefs ->
+        val raw = prefs[keyLrPresets]
+        if (raw.isNullOrBlank()) emptyList() else parseLrPresets(raw)
+    }
+
     /** 常规设置。读不到就用 [AppSettings] 的默认值，不写库。 */
     val settings: Flow<AppSettings> = context.dataStore.data.map { prefs ->
         val raw = prefs[keySettings]
         if (raw.isNullOrBlank()) AppSettings() else parseSettings(raw)
+    }
+
+    val seenChangelogVersion: Flow<String> = context.dataStore.data.map { prefs ->
+        prefs[keySeenChangelogVersion] ?: ""
+    }
+
+    suspend fun markChangelogSeen(versionKey: String) {
+        context.dataStore.edit { it[keySeenChangelogVersion] = versionKey }
     }
 
     /**
@@ -184,6 +201,7 @@ class SettingsStore(private val context: Context) {
                 put("defaultTargetSlot", next.defaultTargetSlot)
                 put("keepScreenOn", next.keepScreenOn)
                 put("lightTheme", next.lightTheme)
+                put("compositionMode", next.compositionMode)
             }.toString()
         }
     }
@@ -191,6 +209,8 @@ class SettingsStore(private val context: Context) {
     private fun parseSettings(raw: String): AppSettings = runCatching {
         val o = JSONObject(raw)
         val d = AppSettings()
+        val rawMode = o.optString("compositionMode", d.compositionMode)
+        val safeMode = com.zbox.ai.core.CompositionMode.entries.firstOrNull { it.name == rawMode }?.name ?: d.compositionMode
         AppSettings(
             galleryLimit = o.optInt("galleryLimit", d.galleryLimit),
             liveViewIntervalMs = com.zbox.ai.core.MonitorPolicy.normalizeInterval(o.optInt("liveViewIntervalMs", d.liveViewIntervalMs)),
@@ -202,6 +222,7 @@ class SettingsStore(private val context: Context) {
             defaultTargetSlot = o.optInt("defaultTargetSlot", d.defaultTargetSlot),
             keepScreenOn = o.optBoolean("keepScreenOn", d.keepScreenOn),
             lightTheme = o.optBoolean("lightTheme", d.lightTheme),
+            compositionMode = safeMode,
         )
     }.getOrElse { AppSettings() }
 
@@ -277,6 +298,23 @@ class SettingsStore(private val context: Context) {
         writePresets(current.map { if (it.id == id) it.copy(lastSlot = slot) else it })
     }
 
+    suspend fun saveLrPreset(preset: SavedLrPreset) {
+        val current = lrPresets.first()
+        val next = current.toMutableList()
+        val idx = next.indexOfFirst { it.id == preset.id }
+        if (idx >= 0) next[idx] = preset else next.add(0, preset)
+        val arr = JSONArray()
+        next.forEach { arr.put(LrPresetCodec.presetToJson(it)) }
+        context.dataStore.edit { it[keyLrPresets] = arr.toString() }
+    }
+
+    suspend fun deleteLrPreset(id: String) {
+        val next = lrPresets.first().filterNot { it.id == id }
+        val arr = JSONArray()
+        next.forEach { arr.put(LrPresetCodec.presetToJson(it)) }
+        context.dataStore.edit { it[keyLrPresets] = arr.toString() }
+    }
+
     private suspend fun writePresets(list: List<SavedPreset>) {
         val arr = JSONArray()
         list.forEach { arr.put(RecipeCodec.presetToJson(it)) }
@@ -302,6 +340,13 @@ class SettingsStore(private val context: Context) {
         val arr = JSONArray(raw)
         (0 until arr.length()).mapNotNull { i ->
             arr.optJSONObject(i)?.let { RecipeCodec.presetFromJson(it) }
+        }
+    }.getOrElse { emptyList() }
+
+    private fun parseLrPresets(raw: String): List<SavedLrPreset> = runCatching {
+        val arr = JSONArray(raw)
+        (0 until arr.length()).mapNotNull { i ->
+            arr.optJSONObject(i)?.let { LrPresetCodec.presetFromJson(it) }
         }
     }.getOrElse { emptyList() }
 }

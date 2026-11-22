@@ -112,7 +112,7 @@ fun PresetLibraryScreen(ui: UiState, vm: MainViewModel, onPickNcp: () -> Unit) {
                     Text("预设库为空", color = ZColors.TextTertiary, fontSize = 12.sp)
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "在「AI 炼丹炉」生成后点保存，或导入 .NCP 文件",
+                        "在「逆向配方」生成后点保存，或导入 .NCP 文件",
                         color = ZColors.TextTertiary, fontSize = 10.sp,
                     )
                 }
@@ -146,8 +146,8 @@ fun PresetLibraryScreen(ui: UiState, vm: MainViewModel, onPickNcp: () -> Unit) {
                         .width(52.dp)
                         .height(34.dp)
                         .clip(RoundedCornerShape(7.dp))
-                        .background(if (on) ZColors.NikonYellow else ZColors.SurfaceHigh)
-                        .border(1.dp, if (on) ZColors.NikonYellow else ZColors.Outline, RoundedCornerShape(7.dp))
+                        .background(if (on) ZColors.ButtonBg else ZColors.SurfaceHigh)
+                        .border(1.dp, if (on) ZColors.ButtonBorder else ZColors.Outline, RoundedCornerShape(7.dp))
                         .clickable {
                             batchTargets = if (on) batchTargets - i else batchTargets + i
                         },
@@ -155,7 +155,7 @@ fun PresetLibraryScreen(ui: UiState, vm: MainViewModel, onPickNcp: () -> Unit) {
                 ) {
                     Text(
                         "C-$i",
-                        color = if (on) Color(0xFF121212) else ZColors.TextSecondary,
+                        color = if (on) ZColors.ButtonFg else ZColors.TextSecondary,
                         fontSize = 11.sp,
                         fontFamily = FontFamily.Monospace,
                         fontWeight = if (on) FontWeight.Bold else FontWeight.Normal,
@@ -580,7 +580,7 @@ private fun AiProviderSection(ui: UiState, vm: MainViewModel) {
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(8.dp))
-                .background(Color(0xFF1C1A0E))
+                .background(ZColors.AccentContainer)
                 .border(1.dp, ZColors.YellowDim.copy(alpha = 0.35f), RoundedCornerShape(8.dp))
                 .padding(10.dp)
         ) {

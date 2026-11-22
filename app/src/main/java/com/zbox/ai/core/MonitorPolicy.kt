@@ -7,22 +7,22 @@ object MonitorPolicy {
         require(usbCount >= 0)
         return when (usbCount) { 0 -> ConnectionRoute.HOTSPOT; 1 -> ConnectionRoute.USB_SINGLE; else -> ConnectionRoute.USB_CHOOSE }
     }
-    val intervals = listOf(33, 63, 500)
+    val intervals = listOf(16, 33, 500)
     fun normalizeInterval(value: Int): Int = when (value) {
-        33 -> 33
-        60, 63, 150 -> 63 // Old smooth 16 fps and standard become the new standard.
+        16, 17 -> 16
+        33, 60, 63, 150 -> 33 // Legacy 30fps/16fps/standard migrate to new 30fps standard.
         300, 500 -> 500 // Preserve power-saving intent after removing the old economy profile.
-        else -> 63
+        else -> 33
     }
     fun intervalLabel(value: Int): String = when (normalizeInterval(value)) {
-        33 -> "流畅 · 30fps"
+        16 -> "流畅 · 60fps"
         500 -> "省电 · 2fps"
-        else -> "标准 · 16fps"
+        else -> "标准 · 30fps"
     }
     fun framePeriodNanos(value: Int): Long = when (normalizeInterval(value)) {
-        33 -> 1_000_000_000L / 30
+        16 -> 1_000_000_000L / 60
         500 -> 500_000_000L
-        else -> 1_000_000_000L / 16
+        else -> 1_000_000_000L / 30
     }
     /** Account for camera transfer AND decode time, rather than sleeping a whole interval on top. */
     fun remainingDelayMs(elapsedNanos: Long, value: Int): Long {

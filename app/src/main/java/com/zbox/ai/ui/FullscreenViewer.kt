@@ -32,6 +32,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.zbox.ai.core.CompositionMode
+import com.zbox.ai.core.LocalCompStyle
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -94,6 +96,95 @@ private fun Context.activity():Activity? {var c=this;while(c is ContextWrapper){
             detectTapGestures{point->if(exposure)exposure=false else TouchFocusPolicy.map(point.x,point.y,size.width.toFloat(),size.height.toFloat(),frame.width,frame.height)?.let{vm.focusAtFrame(it.first,it.second)}}
         },contentScale=ContentScale.Fit)
         PhoneAssistOverlay(frame,vm.phone,compactHistogram=true)
+        LocalCompositionHudOverlay(frame,ui,vm)
+        if (ui.compositionOpen && ui.compositionMode == CompositionMode.AGENT && ui.compositionAdvice != null) {
+            val advice = ui.compositionAdvice
+            Canvas(Modifier.fillMaxSize()) {
+                val scale = minOf(size.width / frame.width, size.height / frame.height)
+                val w = frame.width * scale
+                val h = frame.height * scale
+                val ox = (size.width - w) * 0.5f
+                val oy = (size.height - h) * 0.5f
+                fun drawNormBox(b: com.zbox.ai.core.CompositionBox, color: Color) {
+                    drawRect(
+                        color = color,
+                        topLeft = androidx.compose.ui.geometry.Offset(ox + b.left * w, oy + b.top * h),
+                        size = androidx.compose.ui.geometry.Size((b.right - b.left) * w, (b.bottom - b.top) * h),
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(2.dp.toPx()),
+                    )
+                }
+                advice.subject?.let { drawNormBox(it, Color(0xFF67C7FF)) }
+                drawNormBox(advice.crop, Color(0xFFFFD35F))
+            }
+        }
+        if (ui.compositionOpen && ui.compositionMode == CompositionMode.LOCAL) {
+            Row(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .displayCutoutPadding()
+                    .padding(top = 10.dp)
+                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(14.dp))
+                    .background(Color.Black.copy(alpha = 0.45f))
+                    .border(1.dp, Color.White.copy(alpha = 0.16f), androidx.compose.foundation.shape.RoundedCornerShape(14.dp))
+                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                LocalCompStyle.entries.forEach { st ->
+                    val on = ui.localCompStyle == st
+                    Box(
+                        modifier = Modifier
+                            .clip(androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
+                            .background(if (on) Color(0xFFFFE600).copy(alpha = 0.22f) else Color.Transparent)
+                            .clickable { vm.setLocalCompStyle(st) }
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                    ) {
+                        Text(
+                            st.label,
+                            color = if (on) Color(0xFFFFE600) else Color.White.copy(alpha = 0.78f),
+                            fontSize = 11.sp,
+                        )
+                    }
+                }
+            }
+        }
+        if (ui.compositionOpen && ui.compositionMode == CompositionMode.AGENT) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .displayCutoutPadding()
+                    .padding(start = 12.dp, bottom = 12.dp)
+                    .widthIn(max = 320.dp)
+                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                    .background(Color.Black.copy(alpha = 0.65f))
+                    .border(1.dp, Color.White.copy(alpha = 0.20f), androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                    .padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                when {
+                    ui.compositionBusy -> Text("AI Agent 构图分析中…", color = Color(0xFFFFE600), fontSize = 12.sp)
+                    ui.compositionError.isNotBlank() -> Text(ui.compositionError, color = Color(0xFFFF6B6B), fontSize = 11.sp)
+                    ui.compositionAdvice != null -> {
+                        val adv = ui.compositionAdvice
+                        Text(adv.summary, color = Color.White, fontSize = 12.sp)
+                        adv.moves.take(2).forEach { Text("→ $it", color = Color(0xFFFFE600), fontSize = 11.sp) }
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "重新分析",
+                        color = Color(0xFFFFE600),
+                        fontSize = 11.sp,
+                        modifier = Modifier.clickable(enabled = !ui.compositionBusy) { vm.analyzeComposition() }.padding(vertical = 2.dp),
+                    )
+                    Text(
+                        "关闭",
+                        color = Color.White.copy(alpha = 0.78f),
+                        fontSize = 11.sp,
+                        modifier = Modifier.clickable { vm.clearComposition(close = true) }.padding(vertical = 2.dp),
+                    )
+                }
+            }
+        }
         if(exposure)Box(Modifier.align(Alignment.CenterEnd).displayCutoutPadding().padding(end=maxOf(sideInset,controlRailWidth)+8.dp,top=12.dp,bottom=12.dp)
             .width(288.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp)).background(Color.Black.copy(alpha=.24f)).padding(10.dp)){
             CameraExposureOverlay(ui,vm)
@@ -101,6 +192,9 @@ private fun Context.activity():Activity? {var c=this;while(c is ContextWrapper){
         Column(Modifier.align(Alignment.TopStart).displayCutoutPadding().padding(8.dp),verticalArrangement=Arrangement.spacedBy(8.dp),horizontalAlignment=Alignment.CenterHorizontally){
             IconButton(onClick=onExit,modifier=Modifier.size(44.dp).clip(androidx.compose.foundation.shape.CircleShape).background(Color.Black.copy(alpha=.25f))){Icon(Icons.Default.FullscreenExit,"退出全屏",tint=Color.White.copy(alpha=.85f))}
             CameraOverlayButton("姿势",true){exposure=false;menu=false;poses=true}
+            CameraOverlayButton("构图",ui.isConnected && !ui.capturing && !ui.movieRecording && !ui.movieBusy,selected=ui.compositionOpen){
+                if(ui.compositionOpen) vm.clearComposition(close=true) else vm.openComposition()
+            }
         }
         val railPadding=if(sideInset>=controlRailWidth)(sideInset-controlRailWidth)/2 else 0.dp
         Box(Modifier.align(Alignment.CenterEnd).padding(end=railPadding).width(controlRailWidth).fillMaxHeight().displayCutoutPadding()){
@@ -122,11 +216,11 @@ private fun Context.activity():Activity? {var c=this;while(c is ContextWrapper){
     }
 }
 
-@Composable private fun CameraOverlayButton(label:String,enabled:Boolean,large:Boolean=false,onClick:()->Unit){
+@Composable private fun CameraOverlayButton(label:String,enabled:Boolean,large:Boolean=false,selected:Boolean=false,onClick:()->Unit){
     OutlinedButton(onClick=onClick,enabled=enabled,modifier=if(large)Modifier.size(width=76.dp,height=52.dp)else Modifier.size(width=60.dp,height=40.dp),
         contentPadding=PaddingValues(4.dp),shape=androidx.compose.foundation.shape.RoundedCornerShape(10.dp),
-        border=BorderStroke(1.dp,Color.White.copy(alpha=.22f)),
-        colors=ButtonDefaults.outlinedButtonColors(containerColor=Color.Black.copy(alpha=.18f),contentColor=Color.White.copy(alpha=.82f),disabledContainerColor=Color.Black.copy(alpha=.10f),disabledContentColor=Color.White.copy(alpha=.3f))){
+        border=BorderStroke(1.dp,if(selected)Color(0xFFFFE600).copy(alpha=.85f) else Color.White.copy(alpha=.22f)),
+        colors=ButtonDefaults.outlinedButtonColors(containerColor=if(selected)Color(0xFFFFE600).copy(alpha=.16f) else Color.Black.copy(alpha=.18f),contentColor=if(selected)Color(0xFFFFE600) else Color.White.copy(alpha=.82f),disabledContainerColor=Color.Black.copy(alpha=.10f),disabledContentColor=Color.White.copy(alpha=.3f))){
         Text(label,fontSize=if(large)14.sp else 12.sp,maxLines=1)
     }
 }

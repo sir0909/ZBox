@@ -1,5 +1,6 @@
 package com.zbox.ai.data
 
+import com.zbox.ai.core.CompositionMode
 import com.zbox.ai.core.MonitorPolicy
 
 /**
@@ -9,7 +10,7 @@ import com.zbox.ai.core.MonitorPolicy
  * 每一项都对应一个「用户真的会想改」的取舍，没有为了填满设置页而存在的项：
  *
  * - [galleryLimit] 每批显示的条目数；向下滚动继续浏览，可见缩略图逐张读取。
- * - [liveViewIntervalMs] 取景目标档位：流畅 30fps、标准 16fps、极省 2fps。
+ * - [liveViewIntervalMs] 取景目标档位：流畅 60fps、标准 30fps、省电 2fps。
  *   轮询使用整帧预算（包含传输与解码）；实际帧率受机身和链路限制。
  * - [backupBeforeWrite] 写入前先读一遍机身原样模板。默认开：万一写坏了还能照着原样写回去。
  * - [verifyAfterWrite] 写完立刻回读校验名称。默认开：宁慢 300ms，不要静默失败。
@@ -22,7 +23,7 @@ import com.zbox.ai.core.MonitorPolicy
  */
 data class AppSettings(
     val galleryLimit: Int = 18,
-    val liveViewIntervalMs: Int = 33,
+    val liveViewIntervalMs: Int = 16,
     val backupBeforeWrite: Boolean = true,
     val verifyAfterWrite: Boolean = true,
     val autoSaveCapture: Boolean = false,
@@ -32,6 +33,8 @@ data class AppSettings(
     val keepScreenOn: Boolean = true,
     /** Use a soft warm-gray palette instead of the default dark palette. */
     val lightTheme: Boolean = false,
+    /** 监看页「构图」按钮使用的构图模式：LOCAL（本地实时）或 AGENT（AI Agent）。 */
+    val compositionMode: String = CompositionMode.LOCAL.name,
 ) {
     companion object {
         /** Each batch reveals lightweight entries; only visible thumbnails are fetched. */

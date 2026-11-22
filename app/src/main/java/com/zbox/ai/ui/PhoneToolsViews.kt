@@ -139,7 +139,7 @@ internal fun analyzePhoneFrame(frame:Bitmap,zebra:Boolean=false,peaking:Boolean=
 @Composable internal fun PhoneGalleryTools(ui:UiState,vm:MainViewModel,compareOpen:Boolean,onCloseCompare:()->Unit,queueOpen:Boolean,onCloseQueue:()->Unit){val p by vm.phone.state.collectAsState()
     if(queueOpen)AlertDialog(onDismissRequest=onCloseQueue,title={Text("下载队列")},text={Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(10.dp)){
         Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp)){
-            Button(onClick={vm.phone.startQueue()},enabled=ui.isConnected && !vm.phone.cameraBusy && p.tasks.any{it.status=="待下载"},modifier=Modifier.weight(1f).heightIn(min=44.dp),contentPadding=PaddingValues(8.dp)){Text("开始",fontSize=12.sp,maxLines=1)}
+            Button(onClick={vm.phone.startQueue()},enabled=ui.isConnected && !vm.phone.cameraBusy && p.tasks.any{it.status=="待下载"},modifier=Modifier.weight(1f).heightIn(min=44.dp),contentPadding=PaddingValues(8.dp),colors=androidx.compose.material3.ButtonDefaults.buttonColors(containerColor=ZColors.ButtonBg,contentColor=ZColors.ButtonFg,disabledContainerColor=ZColors.SurfaceHigher,disabledContentColor=ZColors.TextTertiary)){Text("开始",fontSize=12.sp,maxLines=1)}
             OutlinedButton(onClick={vm.phone.pause()},modifier=Modifier.weight(1f).heightIn(min=44.dp),contentPadding=PaddingValues(8.dp)){Text("暂停全部",fontSize=12.sp,maxLines=1)}
         }
         Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp)){

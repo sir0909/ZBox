@@ -37,6 +37,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val pickEditorImage = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            runCatching {
+                contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            onEditorImagePicked?.invoke(uri)
+        }
+    }
+
     private val pickNcp = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             runCatching {
@@ -48,6 +57,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         var onImagePicked: ((android.net.Uri) -> Unit)? = null
+        var onEditorImagePicked: ((android.net.Uri) -> Unit)? = null
         var onNcpPicked: ((android.net.Uri) -> Unit)? = null
         const val ACTION_USB_PERMISSION = "com.zbox.ai.USB_PERMISSION"
     }
@@ -138,6 +148,7 @@ class MainActivity : ComponentActivity() {
 
                 LaunchedEffect(Unit) {
                     onImagePicked = { uri -> vm.pickReference(uri) }
+                    onEditorImagePicked = { uri -> vm.openEditorPhoto(uri) }
                     onNcpPicked = { uri -> vm.importNcp(uri) }
                     // 冷启动即插着相机的情况：自动请求权限
                     // 用 scanUsbDevices() 而不是 nikonDevices()：前者会把「这一轮枚举到了什么」写进日志文件，
@@ -150,6 +161,7 @@ class MainActivity : ComponentActivity() {
                 AppRoot(
                     vm = vm,
                     onPickImage = { pickImage.launch(arrayOf("image/*")) },
+                    onPickEditorPhoto = { pickEditorImage.launch(arrayOf("image/*")) },
                     onPickNcp = { pickNcp.launch(arrayOf("*/*")) },
                     onRequestUsbPermission = { dev -> requestUsbPermission(dev) },
                 )
@@ -189,6 +201,7 @@ class MainActivity : ComponentActivity() {
         runCatching { unregisterReceiver(usbPermissionReceiver) }
         runCatching { unregisterReceiver(usbHotplugReceiver) }
         onImagePicked = null
+        onEditorImagePicked = null
         onNcpPicked = null
         super.onDestroy()
     }

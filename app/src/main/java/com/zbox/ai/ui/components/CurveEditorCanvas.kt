@@ -2,7 +2,8 @@ package com.zbox.ai.ui.components
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -16,6 +17,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -27,8 +29,10 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -55,6 +59,9 @@ fun CurveEditorCanvas(
 ) {
     var draggingIndex by remember { mutableStateOf(-1) }
     var canvasSize by remember { mutableStateOf(Size.Zero) }
+    val latestPoints by rememberUpdatedState(points)
+    val latestOnChange by rememberUpdatedState(onPointsChange)
+    val haptic = LocalHapticFeedback.current
 
     Column(modifier = modifier) {
         Box(
@@ -64,57 +71,116 @@ fun CurveEditorCanvas(
                 .clip(RoundedCornerShape(10.dp))
                 .background(ZColors.SurfaceHigh)
                 .onSizeChanged { canvasSize = Size(it.width.toFloat(), it.height.toFloat()) }
-                .pointerInput(points.size, canvasSize) {
-                    detectDragGestures(
-                        onDragStart = { offset ->
-                            if (canvasSize.width <= 0f) return@detectDragGestures
-                            val pad = 18f
-                            val w = canvasSize.width - pad * 2
-                            val h = canvasSize.height - pad * 2
-                            // 找最近的点（阈值 28px）
-                            var best = -1
-                            var bestDist = Float.MAX_VALUE
-                            points.forEachIndexed { i, p ->
-                                val px = pad + (p.x / 255f) * w
-                                val py = pad + h - (p.y / 255f) * h
-                                val d = hypot(offset.x - px, offset.y - py)
-                                if (d < bestDist) { bestDist = d; best = i }
-                            }
-                            if (bestDist < 40f) {
-                                draggingIndex = best
-                            } else {
-                                // 空白处新增点
-                                val nxp = ((offset.x - pad) / w * 255f).coerceIn(0f, 255f)
-                                val nyp = ((pad + h - offset.y) / h * 255f).coerceIn(0f, 255f)
-                                if (points.size < 20) {
-                                    val next = (points + CubicSplineLut.Point(nxp, nyp))
-                                        .sortedBy { it.x }
-                                    onPointsChange(next)
-                                    draggingIndex = next.indexOfFirst {
-                                        abs(it.x - nxp) < 0.6f && abs(it.y - nyp) < 0.6f
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        if (canvasSize.width <= 0f) return@awaitEachGesture
+                        val pad = 18f
+                        val w = canvasSize.width - pad * 2
+                        val h = canvasSize.height - pad * 2
+                        val curPts = latestPoints
+                        var best = -1
+                        var bestDist = Float.MAX_VALUE
+                        curPts.forEachIndexed { i, p ->
+                            val px = pad + (p.x / 255f) * w
+                            val py = pad + h - (p.y / 255f) * h
+                            val d = hypot(down.position.x - px, down.position.y - py)
+                            if (d < bestDist) { bestDist = d; best = i }
+                        }
+
+                        if (bestDist < 42f && best >= 0) {
+                            var activeIdx = best
+                            draggingIndex = activeIdx
+                            val touchSlop = viewConfiguration.touchSlop
+                            var moved = false
+                            val downTime = System.currentTimeMillis()
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                if (!change.pressed) break
+                                val distFromDown = hypot(
+                                    change.position.x - down.position.x,
+                                    change.position.y - down.position.y,
+                                )
+                                if (!moved && distFromDown < touchSlop &&
+                                    System.currentTimeMillis() - downTime >= viewConfiguration.longPressTimeoutMillis
+                                ) {
+                                    val ptsNow = latestPoints
+                                    if (activeIdx in 1 until ptsNow.lastIndex && ptsNow.size > 2) {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        val next = ptsNow.toMutableList().apply { removeAt(activeIdx) }
+                                        latestOnChange(next)
+                                    }
+                                    draggingIndex = -1
+                                    while (true) {
+                                        val ev2 = awaitPointerEvent()
+                                        if (ev2.changes.none { it.pressed }) break
+                                    }
+                                    break
+                                }
+                                if (distFromDown >= touchSlop) moved = true
+                                if (moved) {
+                                    change.consume()
+                                    val ptsNow = latestPoints
+                                    if (activeIdx in ptsNow.indices) {
+                                        val nx = ((change.position.x - pad) / w * 255f).coerceIn(0f, 255f)
+                                        val ny = ((pad + h - change.position.y) / h * 255f).coerceIn(0f, 255f)
+                                        val mutable = ptsNow.toMutableList()
+                                        val updatedPt = when (activeIdx) {
+                                            0 -> CubicSplineLut.Point(0f, ny)
+                                            ptsNow.lastIndex -> CubicSplineLut.Point(255f, ny)
+                                            else -> CubicSplineLut.Point(nx.coerceIn(1f, 254f), ny)
+                                        }
+                                        mutable[activeIdx] = updatedPt
+                                        val sorted = mutable.sortedBy { it.x }
+                                        if (activeIdx in 1 until ptsNow.lastIndex) {
+                                            val newIdx = sorted.indexOfFirst {
+                                                abs(it.x - updatedPt.x) < 0.01f && abs(it.y - updatedPt.y) < 0.01f
+                                            }
+                                            if (newIdx in 1 until sorted.lastIndex) activeIdx = newIdx
+                                        }
+                                        draggingIndex = activeIdx
+                                        latestOnChange(sorted)
                                     }
                                 }
                             }
-                        },
-                        onDrag = { change, _ ->
-                            change.consume()
-                            val i = draggingIndex
-                            if (i < 0 || i >= points.size || canvasSize.width <= 0f) return@detectDragGestures
-                            val pad = 18f
-                            val w = canvasSize.width - pad * 2
-                            val h = canvasSize.height - pad * 2
-                            val nx = ((change.position.x - pad) / w * 255f).coerceIn(0f, 255f)
-                            val ny = ((pad + h - change.position.y) / h * 255f).coerceIn(0f, 255f)
-                            val mutable = points.toMutableList()
-                            mutable[i] = CubicSplineLut.Point(nx, ny)
-                            // 端点锁 x 不锁 y
-                            if (i == 0) mutable[0] = CubicSplineLut.Point(0f, ny)
-                            if (i == points.lastIndex) mutable[i] = CubicSplineLut.Point(255f, ny)
-                            onPointsChange(mutable.sortedBy { it.x })
-                        },
-                        onDragEnd = { draggingIndex = -1 },
-                        onDragCancel = { draggingIndex = -1 },
-                    )
+                            draggingIndex = -1
+                        } else {
+                            val nxp = ((down.position.x - pad) / w * 255f).coerceIn(1f, 254f)
+                            val nyp = ((pad + h - down.position.y) / h * 255f).coerceIn(0f, 255f)
+                            var activeIdx = -1
+                            if (curPts.size < 20) {
+                                val next = (curPts + CubicSplineLut.Point(nxp, nyp)).sortedBy { it.x }
+                                latestOnChange(next)
+                                activeIdx = next.indexOfFirst {
+                                    abs(it.x - nxp) < 0.6f && abs(it.y - nyp) < 0.6f
+                                }
+                                draggingIndex = activeIdx
+                            }
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                if (!change.pressed) break
+                                val ptsNow = latestPoints
+                                if (activeIdx in 1 until ptsNow.lastIndex) {
+                                    change.consume()
+                                    val nx = ((change.position.x - pad) / w * 255f).coerceIn(1f, 254f)
+                                    val ny = ((pad + h - change.position.y) / h * 255f).coerceIn(0f, 255f)
+                                    val mutable = ptsNow.toMutableList()
+                                    val updatedPt = CubicSplineLut.Point(nx, ny)
+                                    mutable[activeIdx] = updatedPt
+                                    val sorted = mutable.sortedBy { it.x }
+                                    val newIdx = sorted.indexOfFirst {
+                                        abs(it.x - updatedPt.x) < 0.01f && abs(it.y - updatedPt.y) < 0.01f
+                                    }
+                                    if (newIdx in 1 until sorted.lastIndex) activeIdx = newIdx
+                                    draggingIndex = activeIdx
+                                    latestOnChange(sorted)
+                                }
+                            }
+                            draggingIndex = -1
+                        }
+                    }
                 }
         ) {
             Canvas(modifier = Modifier.fillMaxWidth().height(240.dp)) {
@@ -131,7 +197,7 @@ fun CurveEditorCanvas(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                "控制点 ${points.size}/20 · 点击空白新增 · 拖动调整",
+                "控制点 ${points.size}/20 · 点击空白新增 · 拖动调整 · 长按中间点删点",
                 color = ZColors.TextTertiary,
                 fontSize = 10.sp,
                 fontFamily = FontFamily.Monospace,
@@ -204,7 +270,7 @@ private fun DrawScope.drawGrid() {
 
 private fun DrawScope.drawDiagonal() {
     drawLine(
-        color = Color(0xFF5A5A5A),
+        color = ZColors.Outline,
         start = toScreen(0f, 0f),
         end = toScreen(255f, 255f),
         strokeWidth = 1.5f,
@@ -226,7 +292,7 @@ private fun DrawScope.drawLutCurve(lut: IntArray) {
 private fun DrawScope.drawControlPoints(points: List<CubicSplineLut.Point>) {
     points.forEach { p ->
         val o = toScreen(p.x, p.y)
-        drawCircle(color = Color(0xFF121212), radius = 7.5f, center = o)
+        drawCircle(color = ZColors.Bg, radius = 7.5f, center = o)
         drawCircle(color = ZColors.NikonYellow, radius = 5.5f, center = o)
     }
 }

@@ -5,7 +5,9 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -45,8 +47,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
@@ -56,6 +61,7 @@ import androidx.compose.ui.unit.sp
 import com.zbox.ai.core.Recipe
 import com.zbox.ai.ui.components.CurveEditorCanvas
 import com.zbox.ai.ui.components.CurveThumbnail
+import com.zbox.ai.ui.components.EditableSliderRow
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -74,7 +80,7 @@ fun AiLabScreen(
             .verticalScroll(scroll)
             .padding(horizontal = 14.dp, vertical = 6.dp),
     ) {
-        PageEyebrow("AI LAB / 配方工作台")
+        PageEyebrow("逆向配方 / 配方工作台")
         // ---------- 参考图 + 预览对比 ----------
         SectionTitle("参考图 / 实时预览") {
             IconButton(onClick = { vm.renderPreview() }, modifier = Modifier.size(30.dp)) {
@@ -119,6 +125,14 @@ fun AiLabScreen(
                     fontWeight = FontWeight.Medium,
                 )
             }
+        }
+        if (ui.referenceBitmap != null) {
+            Spacer(Modifier.height(6.dp))
+            ZOutlineButton(
+                text = "送入「修图」精修并保存到手机相册",
+                onClick = { vm.sendAiReferenceToEditor() },
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
 
         Spacer(Modifier.height(10.dp))
@@ -212,6 +226,12 @@ fun AiLabScreen(
 
         // ---------- 基础参数 ----------
         SectionTitle("基础参数（EXPEED 6 边界）")
+        Text(
+            "提示：锐化/清晰度/明暗色彩均已接入本地实时预览；写入机身的 614B 载荷以名称与 256-LUT 曲线为主。",
+            color = ZColors.TextTertiary,
+            fontSize = 9.sp,
+            lineHeight = 13.sp,
+        )
         ParamSlider("锐化 Sharpening", ui.recipe.sharpening, -3f, 9f, vm, ParamKind.SHARP)
         ParamSlider("清晰度 Clarity", ui.recipe.clarity, -5f, 5f, vm, ParamKind.CLARITY)
         ParamSlider("对比度 Contrast", ui.recipe.contrast, -3f, 3f, vm, ParamKind.CONTRAST)
@@ -273,41 +293,62 @@ fun AiLabScreen(
             modifier = Modifier.fillMaxWidth(),
             loading = ui.writing,
         )
-
-        // 写入被拒时的自救入口，按「信息量 / 破坏性」排序：
-        //   1. 审计机身（纯只读：能力表 + 当前项 + 曲线通道 + 应用模式）
-        //   2. 无损回写（原样读出来再原样写回去，内容零变化，但能判定 0x90CD 通不通）
-        //   3. 全组合盲探（最后手段，80 种，最慢）—— v1.5.0 起载荷是 614 字节真机格式，用不上了
+        var diagExpanded by remember { mutableStateOf(false) }
         if (ui.isConnected) {
             Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ZOutlineButton(
-                    text = if (ui.probingWrite) "进行中…" else "① 审计机身",
-                    onClick = { vm.auditPicCtrl() },
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(ZColors.Surface)
+                    .border(1.dp, ZColors.Outline, RoundedCornerShape(8.dp))
+                    .clickable { diagExpanded = !diagExpanded }
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "高级诊断（PTP 写入探测）",
+                    color = ZColors.TextSecondary,
+                    fontSize = 11.sp,
                     modifier = Modifier.weight(1f),
-                    enabled = !ui.probingWrite && !ui.writing,
                 )
-                ZOutlineButton(
-                    text = "② 无损回写",
-                    onClick = { vm.probeWriteBack() },
-                    modifier = Modifier.weight(1f),
-                    enabled = !ui.probingWrite && !ui.writing,
+                Text(
+                    if (diagExpanded) "收起 ▲" else "展开 ▼",
+                    color = ZColors.TextTertiary,
+                    fontSize = 10.sp,
                 )
             }
-            Spacer(Modifier.height(6.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ZOutlineButton(
-                    text = "③ 全组合盲探(80)",
-                    onClick = { vm.probeWriteMechanism() },
-                    modifier = Modifier.weight(1f),
-                    enabled = !ui.probingWrite && !ui.writing,
-                )
-                ZOutlineButton(
-                    text = "扫描所有槽位",
-                    onClick = { vm.scanAllPicCtrlItems() },
-                    modifier = Modifier.weight(1f),
-                    enabled = !ui.probingWrite && !ui.writing,
-                )
+            if (diagExpanded) {
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ZOutlineButton(
+                        text = if (ui.probingWrite) "进行中…" else "① 审计机身",
+                        onClick = { vm.auditPicCtrl() },
+                        modifier = Modifier.weight(1f),
+                        enabled = !ui.probingWrite && !ui.writing,
+                    )
+                    ZOutlineButton(
+                        text = "② 无损回写",
+                        onClick = { vm.probeWriteBack() },
+                        modifier = Modifier.weight(1f),
+                        enabled = !ui.probingWrite && !ui.writing,
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ZOutlineButton(
+                        text = "③ 全组合盲探(80)",
+                        onClick = { vm.probeWriteMechanism() },
+                        modifier = Modifier.weight(1f),
+                        enabled = !ui.probingWrite && !ui.writing,
+                    )
+                    ZOutlineButton(
+                        text = "扫描所有槽位",
+                        onClick = { vm.scanAllPicCtrlItems() },
+                        modifier = Modifier.weight(1f),
+                        enabled = !ui.probingWrite && !ui.writing,
+                    )
+                }
             }
             if (ui.writeModeLabel.isNotBlank()) {
                 Spacer(Modifier.height(6.dp))
@@ -368,38 +409,25 @@ private fun ParamSlider(
     vm: MainViewModel,
     kind: ParamKind,
 ) {
-    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(label, color = ZColors.TextSecondary, fontSize = 11.sp, modifier = Modifier.weight(1f))
-            Text(
-                "%+.1f".format(value),
-                color = if (kotlin.math.abs(value) > 0.01f) ZColors.NikonYellow else ZColors.TextTertiary,
-                fontSize = 12.sp,
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Medium,
-            )
+    EditableSliderRow(
+        label = label,
+        value = value,
+        min = min,
+        max = max,
+        defaultValue = 0f,
+        format = "%+.1f",
+        inputDecimals = 1,
+        onChange = { v ->
+            when (kind) {
+                ParamKind.SHARP -> vm.updateRecipeParam(sharpening = v)
+                ParamKind.CLARITY -> vm.updateRecipeParam(clarity = v)
+                ParamKind.CONTRAST -> vm.updateRecipeParam(contrast = v)
+                ParamKind.BRIGHT -> vm.updateRecipeParam(brightness = v)
+                ParamKind.SAT -> vm.updateRecipeParam(saturation = v)
+                ParamKind.HUE -> vm.updateRecipeParam(hue = v)
+            }
         }
-        Slider(
-            value = value,
-            onValueChange = { v ->
-                when (kind) {
-                    ParamKind.SHARP -> vm.updateRecipeParam(sharpening = v)
-                    ParamKind.CLARITY -> vm.updateRecipeParam(clarity = v)
-                    ParamKind.CONTRAST -> vm.updateRecipeParam(contrast = v)
-                    ParamKind.BRIGHT -> vm.updateRecipeParam(brightness = v)
-                    ParamKind.SAT -> vm.updateRecipeParam(saturation = v)
-                    ParamKind.HUE -> vm.updateRecipeParam(hue = v)
-                }
-            },
-            valueRange = min..max,
-            modifier = Modifier.fillMaxWidth().height(26.dp),
-            colors = SliderDefaults.colors(
-                thumbColor = ZColors.NikonYellow,
-                activeTrackColor = ZColors.NikonYellow,
-                inactiveTrackColor = ZColors.Outline,
-            ),
-        )
-    }
+    )
 }
 
 /** 参考图 / 效果图 上下对比，按住预览原图。 */
@@ -414,16 +442,15 @@ private fun ComparePreview(ui: UiState, vm: MainViewModel, onPickImage: () -> Un
             .fillMaxWidth()
             .aspectRatio(3f / 2f)
             .clip(RoundedCornerShape(10.dp))
-            .background(Color(0xFF0A0A0A))
+            .background(if (ZColors.isLightTheme) ZColors.SurfaceHigh else Color(0xFF0A0A0A))
             .border(1.dp, ZColors.Outline, RoundedCornerShape(10.dp))
-            .pointerInput(ref) {
-                detectTapGestures(
-                    onPress = {
-                        vm.setShowOriginal(true)
-                        tryAwaitRelease()
-                        vm.setShowOriginal(false)
+            .pointerInput(ref, preview) {
+                if (ref != null && preview != null) {
+                    detectDragGestures { change, _ ->
+                        change.consume()
+                        sliderPos = (change.position.x / size.width.toFloat()).coerceIn(0.05f, 0.95f)
                     }
-                )
+                }
             },
     ) {
         when {
@@ -459,21 +486,34 @@ private fun ComparePreview(ui: UiState, vm: MainViewModel, onPickImage: () -> Un
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Fit,
                 )
-                Box(
+                Image(
+                    bitmap = preview.asImageBitmap(),
+                    contentDescription = "效果",
                     modifier = Modifier
                         .fillMaxSize()
-                        .clip(RoundedCornerShape(topStart = 0.dp).let { RoundedCornerShape(0.dp) })
-                ) {
-                    // 用 alpha 叠加做整体对比（简单可靠，避免裁剪计算）
-                    Image(
-                        bitmap = preview.asImageBitmap(),
-                        contentDescription = "效果",
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Fit,
-                        alpha = 1f,
+                        .drawWithContent {
+                            val splitX = size.width * sliderPos
+                            clipRect(left = splitX, top = 0f, right = size.width, bottom = size.height) {
+                                this@drawWithContent.drawContent()
+                            }
+                        },
+                    contentScale = ContentScale.Fit,
+                )
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val x = size.width * sliderPos
+                    drawLine(
+                        color = Color.White.copy(alpha = 0.9f),
+                        start = Offset(x, 0f),
+                        end = Offset(x, size.height),
+                        strokeWidth = 2.dp.toPx(),
+                    )
+                    drawCircle(
+                        color = ZColors.NikonYellow,
+                        radius = 10.dp.toPx(),
+                        center = Offset(x, size.height * 0.5f),
                     )
                 }
-                Badge("AI 效果 · 按住看原图", Modifier.align(Alignment.BottomStart).padding(8.dp), ZColors.NikonYellow)
+                Badge("左: 原图 | 右: 调色 (拖动分割线)", Modifier.align(Alignment.BottomStart).padding(8.dp), ZColors.NikonYellow)
             }
         }
     }
@@ -508,11 +548,11 @@ private fun SlotPicker(
                     rowSlots.forEach { slot ->
                         val selected = ui.targetSlotIndex == slot.index
                         val bg = when {
-                            selected -> ZColors.NikonYellow
+                            selected -> ZColors.ButtonBg
                             slot.loaded -> ZColors.SurfaceHigh
                             else -> ZColors.Surface
                         }
-                        val fg = if (selected) Color(0xFF121212)
+                        val fg = if (selected) ZColors.ButtonFg
                             else if (slot.loaded) ZColors.TextPrimary else ZColors.TextTertiary
                         Column(
                             modifier = Modifier
@@ -522,7 +562,7 @@ private fun SlotPicker(
                                 .background(bg)
                                 .border(
                                     1.dp,
-                                    if (selected) ZColors.NikonYellow else ZColors.Outline,
+                                    if (selected) ZColors.ButtonBorder else ZColors.Outline,
                                     RoundedCornerShape(8.dp),
                                 )
                                 .clickable { vm.setTargetSlot(slot.index) }
@@ -539,7 +579,7 @@ private fun SlotPicker(
                             )
                             Text(
                                 if (slot.loaded) slot.name.take(9) else "空",
-                                color = if (selected) Color(0xFF3A3300) else ZColors.TextTertiary,
+                                color = if (selected) ZColors.ButtonFgMuted else ZColors.TextTertiary,
                                 fontSize = 8.sp,
                                 maxLines = 1,
                                 fontFamily = FontFamily.Monospace,

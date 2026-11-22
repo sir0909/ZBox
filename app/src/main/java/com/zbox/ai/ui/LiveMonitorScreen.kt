@@ -223,14 +223,14 @@ internal fun PtpIpClientIdentityDialog(ui: UiState, vm: MainViewModel, onDismiss
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(7.dp))
-                                .background(if (selected) ZColors.NikonYellow else ZColors.Surface)
+                                .background(if (selected) ZColors.ButtonBg else ZColors.Surface)
                                 .border(1.dp, ZColors.Outline, RoundedCornerShape(7.dp))
                                 .clickable { nameInput = preset; errorText = "" }
                                 .padding(horizontal = 9.dp, vertical = 6.dp),
                         ) {
                             Text(
                                 label,
-                                color = if (selected) Color(0xFF121212) else ZColors.TextSecondary,
+                                color = if (selected) ZColors.ButtonFg else ZColors.TextSecondary,
                                 fontSize = 10.sp,
                                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
                             )
@@ -265,7 +265,7 @@ internal fun PtpIpClientIdentityDialog(ui: UiState, vm: MainViewModel, onDismiss
                     )
                 }
                 if (errorText.isNotBlank()) {
-                    Text(errorText, color = Color(0xFFFF8A80), fontSize = 11.sp, lineHeight = 15.sp)
+                    Text(errorText, color = ZColors.Danger, fontSize = 11.sp, lineHeight = 15.sp)
                 }
             }
         },
@@ -432,6 +432,7 @@ private fun LiveViewStage(ui: UiState, vm: MainViewModel) {
         }
 
         if(!fullscreen)PhoneAssistOverlay(frame,vm.phone)
+        if(!fullscreen)LocalCompositionHudOverlay(frame,ui,vm)
         IconButton(
             onClick = { fullscreen = true },
             enabled = ui.isConnected && ui.liveViewActive && frame != null && !ui.capturing && !ui.movieBusy,
@@ -518,7 +519,7 @@ private fun LiveViewStage(ui: UiState, vm: MainViewModel) {
         )
         MonitorActionButton(text="AF", onClick={ vm.triggerAutoFocusNow() },
             modifier=Modifier.weight(1f), enabled=ui.isConnected && !ui.pairingBusy && !ui.capturing && !ui.movieRecording && !ui.movieBusy)
-        MonitorActionButton(text="AI 构图", onClick={ if(ui.compositionOpen) vm.clearComposition(close=true) else vm.openComposition() },
+        MonitorActionButton(text="构图", onClick={ if(ui.compositionOpen) vm.clearComposition(close=true) else vm.openComposition() },
             modifier=Modifier.weight(1f), selected=ui.compositionOpen,
             enabled=ui.isConnected && !ui.pairingBusy && !ui.capturing && !ui.movieBusy && !ui.movieRecording)
         MonitorActionButton(
@@ -532,7 +533,8 @@ private fun LiveViewStage(ui: UiState, vm: MainViewModel) {
 
 @Composable
 internal fun ShutterRow(ui: UiState, vm: MainViewModel,translucent:Boolean=false) {
-    val shutterAccent=if(translucent)Color.White else ZColors.NikonYellow
+    val shutterAccent=if(translucent)Color.White else ZColors.ButtonBg
+    val shutterRing=if(translucent)Color.White else ZColors.ButtonBorder
     Column(Modifier.fillMaxWidth().padding(vertical=2.dp), horizontalAlignment=Alignment.CenterHorizontally) {
         Box(Modifier.fillMaxWidth().height(80.dp), contentAlignment=Alignment.Center) {
         // 普通模式为黄色外环+实心中心；全屏只将强调色替换为白色。
@@ -541,8 +543,8 @@ internal fun ShutterRow(ui: UiState, vm: MainViewModel,translucent:Boolean=false
                 .size(60.dp)
                 .semantics { contentDescription="拍照快门"; role=Role.Button; onClick(label="拍摄单张") { vm.capturePhoto(); true } }
                 .clip(RoundedCornerShape(50))
-                .background(if(translucent)Color.Black.copy(alpha=.12f) else if (ui.capturing) ZColors.SurfaceHigher else Color(0xFF17191B))
-                .border(3.dp,shutterAccent,RoundedCornerShape(50))
+                .background(if(translucent)Color.Black.copy(alpha=.12f) else if (ui.capturing) ZColors.SurfaceHigher else ZColors.Surface)
+                .border(3.dp,shutterRing,RoundedCornerShape(50))
                 .pointerInput(vm) {
                     // Never key on capturing: starting capture must not cancel the held pointer.
                     detectTapGestures(
@@ -557,7 +559,7 @@ internal fun ShutterRow(ui: UiState, vm: MainViewModel,translucent:Boolean=false
         ) {
             Box(Modifier.size(34.dp).clip(RoundedCornerShape(50)).background(shutterAccent))
             if (ui.capturing) {
-                Text("…", color = Color(0xFF17191B), fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Text("…", color = if (translucent) Color(0xFF17191B) else ZColors.ButtonFg, fontSize = 20.sp, fontWeight = FontWeight.Bold)
             }
 
         }
@@ -712,7 +714,7 @@ private fun ModeChips(ui: UiState, vm: MainViewModel) {
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(6.dp))
-                    .background(if (sel) ZColors.NikonYellow else ZColors.SurfaceHigh)
+                    .background(if (sel) ZColors.ButtonBg else ZColors.SurfaceHigh)
                     .padding(horizontal = 14.dp, vertical = 6.dp)
                     .pointerInput(v, ui.isConnected, ui.readOnlyProps) {
                         // 点档位就直接发到机身，不必再点「下发」——这是用户最容易误会的一步
@@ -721,7 +723,7 @@ private fun ModeChips(ui: UiState, vm: MainViewModel) {
             ) {
                 Text(
                     label,
-                    color = if (sel) Color(0xFF121212) else ZColors.TextSecondary,
+                    color = if (sel) ZColors.ButtonFg else ZColors.TextSecondary,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
                 )
@@ -818,7 +820,7 @@ private fun LastCaptureCard(ui: UiState, vm: MainViewModel) {
                 modifier = Modifier.padding(start = 11.dp, top = 11.dp, bottom = 11.dp)
                     .size(width = 70.dp, height = 62.dp)
                     .clip(RoundedCornerShape(8.dp))
-                    .background(Color(0xFF202327))
+                    .background(ZColors.SurfaceHigh)
                     .border(1.dp, ZColors.Outline, RoundedCornerShape(8.dp)),
                 contentAlignment = Alignment.Center,
             ) {
@@ -1059,7 +1061,9 @@ private fun ConnectBar(
     var showIdentityDialog by remember { mutableStateOf(false) }
     Box(
         modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
-            .background(Color(0xFF1C1A0E)).padding(10.dp),
+            .background(ZColors.Surface)
+            .border(1.dp, ZColors.Outline, RoundedCornerShape(10.dp))
+            .padding(10.dp),
     ) {
         Column {
             Row(verticalAlignment = Alignment.CenterVertically) {

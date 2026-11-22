@@ -30,8 +30,8 @@ android {
         applicationId = "com.zbox.ai"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.0.1"
         testInstrumentationRunner = providers.gradleProperty("testRunner").getOrElse("com.zbox.ai.StartupUpdateCheck")
     }
 
@@ -108,6 +108,8 @@ dependencies {
     implementation("androidx.datastore:datastore-preferences:1.1.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.google.mlkit:segmentation-selfie:16.0.0-beta6")
+    implementation("com.google.mlkit:object-detection:17.0.2")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
