@@ -33,6 +33,9 @@ android {
         versionCode = 2
         versionName = "1.0.1"
         testInstrumentationRunner = providers.gradleProperty("testRunner").getOrElse("com.zbox.ai.StartupUpdateCheck")
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
     }
 
     signingConfigs {
@@ -48,8 +51,8 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
-            isShrinkResources = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             if (hasReleaseKeystore) {
                 signingConfig = signingConfigs.getByName("release")
             }
@@ -74,6 +77,9 @@ android {
         buildConfig = true
     }
     packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
         resources.excludes += setOf(
             "/META-INF/{AL2.0,LGPL2.1}",
             "META-INF/DEPENDENCIES",
